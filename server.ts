@@ -167,57 +167,27 @@ async function startServer() {
   // Vite middleware for development
 
   // ──────────────────────────────────────────────
-  // Amazon PA-API エンドポイント（SDK使用）
+  // Amazon スクレイパー中継エンドポイント
+  // Oracle A1のPuppeteerスクレイパーに中継
   // ──────────────────────────────────────────────
   app.post('/api/amazon', async (req, res) => {
     try {
       const { asin } = req.body;
       if (!asin) return res.status(400).json({ error: 'ASIN required' });
 
-      const accessKey = process.env.AMAZON_ACCESS_KEY || '';
-      const secretKey = process.env.AMAZON_SECRET_KEY || '';
-      const trackingId = process.env.AMAZON_TRACKING_ID || '';
-
-      if (!accessKey || !secretKey || !trackingId) {
-        return res.status(500).json({ error: 'Amazon API keys not configured' });
-      }
-
-      const affiliateUrl = `https://www.amazon.co.jp/dp/${asin}?tag=${trackingId}`;
-
-      const ProductAdvertisingAPIv1 = require('paapi5-nodejs-sdk');
-      const client = ProductAdvertisingAPIv1.ApiClient.instance;
-      client.accessKey = accessKey;
-      client.secretKey = secretKey;
-      client.host = 'webservices.amazon.co.jp';
-      client.region = 'us-east-1';
-
-      const api = new ProductAdvertisingAPIv1.DefaultApi();
-      const request = new ProductAdvertisingAPIv1.GetItemsRequest();
-      request.PartnerTag = trackingId;
-      request.PartnerType = 'Associates';
-      request.Marketplace = 'www.amazon.co.jp';
-      request.ItemIds = [asin];
-      request.Resources = [
-        'Offers.Listings.Price',
-        'ItemInfo.Title',
-        'Images.Primary.Medium',
-      ];
-
-      const paData: any = await new Promise((resolve, reject) => {
-        api.getItems(request, (error: any, data: any) => {
-          if (error) reject(error);
-          else resolve(data);
-        });
+      const scraperUrl = 'http://161.33.140.166:8081/scrape';
+      const response = await fetch(scraperUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ asin }),
       });
 
-      const item = paData?.ItemsResult?.Items?.[0];
-      if (!item) return res.status(404).json({ error: 'Item not found', affiliateUrl });
+      if (!response.ok) {
+        throw new Error(`Scraper error: ${response.status}`);
+      }
 
-      const price = item?.Offers?.Listings?.[0]?.Price?.Amount ?? null;
-      const title = item?.ItemInfo?.Title?.DisplayValue ?? '';
-      const imageUrl = item?.Images?.Primary?.Medium?.URL ?? '';
-
-      res.json({ asin, price, title, imageUrl, affiliateUrl });
+      const data = await response.json();
+      res.json(data);
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
