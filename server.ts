@@ -167,7 +167,7 @@ async function startServer() {
   // Vite middleware for development
 
   // ──────────────────────────────────────────────
-  // Amazon PA-API エンドポイント
+  // Amazon PA-API エンドポイント（SDK使用）
   // ──────────────────────────────────────────────
   app.post('/api/amazon', async (req, res) => {
     try {
@@ -183,51 +183,35 @@ async function startServer() {
       }
 
       const affiliateUrl = `https://www.amazon.co.jp/dp/${asin}?tag=${trackingId}`;
-      const endpoint = 'webservices.amazon.co.jp';
-      const paPath = '/paapi5/getitems';
-      const payload = JSON.stringify({
-        ItemIds: [asin],
-        Resources: ['Offers.Listings.Price', 'ItemInfo.Title', 'Images.Primary.Medium'],
-        PartnerTag: trackingId,
-        PartnerType: 'Associates',
-        Marketplace: 'www.amazon.co.jp',
+
+      const ProductAdvertisingAPIv1 = require('paapi5-nodejs-sdk');
+      const client = ProductAdvertisingAPIv1.ApiClient.instance;
+      client.accessKey = accessKey;
+      client.secretKey = secretKey;
+      client.host = 'webservices.amazon.co.jp';
+      client.region = 'us-east-1';
+
+      const api = new ProductAdvertisingAPIv1.DefaultApi();
+      const request = new ProductAdvertisingAPIv1.GetItemsRequest();
+      request.PartnerTag = trackingId;
+      request.PartnerType = 'Associates';
+      request.Marketplace = 'www.amazon.co.jp';
+      request.ItemIds = [asin];
+      request.Resources = [
+        'Offers.Listings.Price',
+        'ItemInfo.Title',
+        'Images.Primary.Medium',
+      ];
+
+      const paData: any = await new Promise((resolve, reject) => {
+        api.getItems(request, (error: any, data: any) => {
+          if (error) reject(error);
+          else resolve(data);
+        });
       });
 
-      const { createHmac, createHash } = await import('crypto');
-      const now = new Date();
-      const amzDate = now.toISOString().replace(/[:\-]|\.\d{3}/g, '').slice(0, 15) + 'Z';
-      const dateStamp = amzDate.slice(0, 8);
-      const region = 'us-east-1';
-      const service = 'ProductAdvertisingAPI';
-
-      const hash = (s: string) => createHash('sha256').update(s).digest('hex');
-      const hmac = (key: Buffer | string, s: string) => createHmac('sha256', key).update(s).digest();
-
-      const canonicalHeaders = `content-encoding:amz-1.0\ncontent-type:application/json; charset=utf-8\nhost:${endpoint}\nx-amz-date:${amzDate}\nx-amz-target:com.amazon.paapi5.v1.ProductAdvertisingAPIv1.GetItems\n`;
-      const signedHeaders = 'content-encoding;content-type;host;x-amz-date;x-amz-target';
-      const canonicalRequest = `POST\n${paPath}\n\n${canonicalHeaders}\n${signedHeaders}\n${hash(payload)}`;
-      const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
-      const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${credentialScope}\n${hash(canonicalRequest)}`;
-      const signingKey = hmac(hmac(hmac(hmac('AWS4' + secretKey, dateStamp), region), service), 'aws4_request');
-      const signature = createHmac('sha256', signingKey).update(stringToSign).digest('hex');
-      const authorization = `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-
-      const paResponse = await fetch(`https://${endpoint}${paPath}`, {
-        method: 'POST',
-        headers: {
-          'content-encoding': 'amz-1.0',
-          'content-type': 'application/json; charset=utf-8',
-          'host': endpoint,
-          'x-amz-date': amzDate,
-          'x-amz-target': 'com.amazon.paapi5.v1.ProductAdvertisingAPIv1.GetItems',
-          'Authorization': authorization,
-        },
-        body: payload,
-      });
-
-      const paData: any = await paResponse.json();
       const item = paData?.ItemsResult?.Items?.[0];
-      if (!item) return res.status(404).json({ error: 'Item not found', affiliateUrl, paData });
+      if (!item) return res.status(404).json({ error: 'Item not found', affiliateUrl });
 
       const price = item?.Offers?.Listings?.[0]?.Price?.Amount ?? null;
       const title = item?.ItemInfo?.Title?.DisplayValue ?? '';
