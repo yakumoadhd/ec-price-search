@@ -227,7 +227,7 @@ async function startServer() {
 
       const paData: any = await paResponse.json();
       const item = paData?.ItemsResult?.Items?.[0];
-      if (!item) return res.status(404).json({ error: 'Item not found', affiliateUrl });
+      if (!item) return res.status(404).json({ error: 'Item not found', affiliateUrl, paData });
 
       const price = item?.Offers?.Listings?.[0]?.Price?.Amount ?? null;
       const title = item?.ItemInfo?.Title?.DisplayValue ?? '';
