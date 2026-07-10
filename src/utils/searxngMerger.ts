@@ -5,6 +5,8 @@
  *
  * 仕様書 v7.0 / ロードマップ Step 2-6 準拠
  *  - ヨドバシドットコム： mall='yodobashi'、実質価格 = 価格 - 価格*10%
+ *  - Amazon： mall='amazon'、ASINからアフィリエイトURL・画像URLを生成
+ *             価格はSearXNGのsnippetから抽出。取れない場合は破棄。
  *  - その他汎用EC（Tier3）： mall='other'、実質価格 = 価格 + 送料
  *  - 重複排除：Tier1結果と「商品名の類似度」で簡易判定
  */
@@ -12,6 +14,37 @@
 import { AffiliateItem } from '../types';
 import { cleanProductName } from '../productNameCleaner';
 import { SearXNGResult } from './searxngClient';
+
+// ─── Amazonアフィリエイト設定 ──────────────────────────────────
+const AMAZON_AFFILIATE_TAG = 'ggvssyakumo-22';
+
+/**
+ * SearXNGのAmazon URLからASINを抽出する。
+ * 例: https://www.amazon.co.jp/dp/B0FR7Q59GQ/ref=... → 'B0FR7Q59GQ'
+ * 抽出できなければ null を返す。
+ */
+export function extractAsinFromUrl(url: string): string | null {
+  if (!url) return null;
+  const m = url.match(/\/dp\/([A-Z0-9]{10})/);
+  return m ? m[1] : null;
+}
+
+/**
+ * ASINからAmazonアフィリエイトURLを生成する。
+ * 元URLのパラメータは全部捨て、ASINだけ使ってクリーンなURLを再構築する。
+ * tag=ggvssyakumo-22 のみ付与（linkCode/linkId/ref_等は不要・確認済み）。
+ */
+export function buildAmazonAffiliateUrl(asin: string): string {
+  return `https://www.amazon.co.jp/dp/${asin}?tag=${AMAZON_AFFILIATE_TAG}`;
+}
+
+/**
+ * ASINからAmazon商品画像URLを生成する。
+ * AmazonはASINさえあれば画像URLを自動生成できる。
+ */
+export function buildAmazonImageUrl(asin: string): string {
+  return `https://images-na.ssl-images-amazon.com/images/P/${asin}.09.LZZZZZZZ.jpg`;
+}
 
 // ─── 価格・送料の抽出 ──────────────────────────────────────────
 
@@ -23,7 +56,6 @@ import { SearXNGResult } from './searxngClient';
 export function extractPriceFromText(text: string): number | null {
   if (!text) return null;
 
-  // 「￥1,280」「¥1,280」「1,280円」などにマッチ
   const patterns = [
     /[￥¥]\s*([\d,]{3,})/,
     /([\d,]{3,})\s*円/,
@@ -63,14 +95,18 @@ export function extractShippingFromText(text: string): number | null {
 /**
  * SearXNGの結果（URLまたはtitle）からモールを判定する。
  * ヨドバシドットコムは別格扱いで 'yodobashi' を返す。
+ * Amazonは 'amazon' を返す。
  * その他は汎用EC（Tier3）として 'other' を返す。
  */
-export function detectMallFromSearXNGResult(item: SearXNGResult): 'yodobashi' | 'other' {
+export function detectMallFromSearXNGResult(item: SearXNGResult): 'yodobashi' | 'amazon' | 'other' {
   const url = (item.url || '').toLowerCase();
   const title = item.title || '';
 
   if (url.includes('yodobashi.com') || title.includes('ヨドバシ')) {
     return 'yodobashi';
+  }
+  if (url.includes('amazon.co.jp')) {
+    return 'amazon';
   }
   return 'other';
 }
@@ -80,7 +116,6 @@ export function detectMallFromSearXNGResult(item: SearXNGResult): 'yodobashi' | 
 /**
  * ヨドバシドットコムの実質価格を計算する。
  * 実質価格 = 商品価格 - (商品価格 × 10%)
- * （ヨドバシゴールドポイント還元 10% を想定した簡易計算）
  */
 export function calcYodobashiEffectivePrice(price: number): number {
   return Math.round(price - price * 0.1);
@@ -98,11 +133,6 @@ export function calcGenericEffectivePrice(price: number, shippingFee: number | n
 
 /**
  * 2つの商品名がどの程度似ているかを簡易判定する。
- * cleanProductName() で正規化した上で、
- * 短い方の文字列が長い方に含まれていれば「同一商品の可能性が高い」と判定する。
- *
- * 厳密なJANコード比較は行わない（SearXNG側にJANコードが
- * 含まれないケースが多いため、商品名ベースの簡易判定とする）。
  */
 export function isLikelySameProduct(nameA: string, nameB: string): boolean {
   const a = cleanProductName(nameA).trim();
@@ -118,8 +148,7 @@ export function isLikelySameProduct(nameA: string, nameB: string): boolean {
 }
 
 /**
- * SearXNGの1件が、既存のTier1結果（typedData）のいずれかと
- * 重複しているかを判定する。
+ * SearXNGの1件が、既存のTier1結果のいずれかと重複しているかを判定する。
  */
 export function isDuplicateOfExisting(
   searxngTitle: string,
@@ -132,23 +161,54 @@ export function isDuplicateOfExisting(
 
 /**
  * SearXNGの検索結果1件を AffiliateItem（画面表示用データ）に変換する。
- * 価格・送料が取得できなかった場合は null を返し、
- * 呼び出し側でバナーを生成しないようにする。
  *
- * @param result    SearXNGの1件分の結果
- * @param index     ユニークID生成用のインデックス
+ * Amazonの場合：
+ *   - URLからASINを抽出してアフィリエイトURL・画像URLを生成
+ *   - 価格はSearXNGのsnippetから抽出。取れない場合は null を返す（破棄）。
+ *
+ * それ以外の場合：
+ *   - 価格が取得できなかった場合は null を返す（バナーを生成しない）。
  */
 export function convertSearXNGResultToItem(
   result: SearXNGResult,
   index: number
 ): AffiliateItem | null {
   const priceSource = `${result.title ?? ''} ${result.content ?? ''}`;
-  const price = extractPriceFromText(priceSource);
+  const mall = detectMallFromSearXNGResult(result);
 
-  // 価格が取得できない結果はバナーを作らない（仕様書 Tier2/3 仕様）
+  // ─── Amazon専用処理 ─────────────────────────────────────────
+  if (mall === 'amazon') {
+    const asin = extractAsinFromUrl(result.url ?? '');
+    if (!asin) return null;
+
+    const price = extractPriceFromText(priceSource);
+    if (price === null) return null;
+
+    const affiliateUrl = buildAmazonAffiliateUrl(asin);
+    const imageUrl = buildAmazonImageUrl(asin);
+
+    return {
+      id: `searxng-amazon-${index}`,
+      rank: 0,
+      mall: 'amazon',
+      raw_name: result.title ?? '',
+      price,
+      shipping_fee: 0,
+      point: 0,
+      coupon_discount: 0,
+      effective_total: price,
+      total_units: 1,
+      unit_price: price,
+      affiliate_url: affiliateUrl,
+      image_url: imageUrl,
+      capacity: '不明',
+    };
+  }
+
+  // ─── ヨドバシ・その他 ───────────────────────────────────────
+  const price = extractPriceFromText(priceSource);
   if (price === null) return null;
 
-  const mall = detectMallFromSearXNGResult(result);
   const shippingFee = extractShippingFromText(priceSource);
 
   const effectiveTotal =
@@ -158,7 +218,7 @@ export function convertSearXNGResultToItem(
 
   return {
     id: `searxng-${mall}-${index}`,
-    rank: 0, // 並び順はソート処理で再計算されるため初期値は0
+    rank: 0,
     mall: mall === 'yodobashi' ? 'yodobashi' : 'other',
     raw_name: result.title ?? '',
     price,
@@ -177,9 +237,7 @@ export function convertSearXNGResultToItem(
 // ─── メインのマージ処理 ────────────────────────────────────────
 
 export interface MergeResult {
-  /** 重複排除・変換済みのSearXNG由来アイテム */
   addedItems: AffiliateItem[];
-  /** 取得した件数・価格未取得でスキップした件数・重複でスキップした件数 */
   stats: {
     total: number;
     skippedNoPrice: number;
@@ -190,14 +248,6 @@ export interface MergeResult {
 
 /**
  * SearXNGの検索結果を、既存のTier1結果（typedData）にマージする。
- *
- * 処理の流れ：
- *  1. SearXNG結果をループし、価格が取得できないものはスキップ
- *  2. 既存結果（Tier1）と商品名が極めて近いものは重複としてスキップ
- *  3. 残ったものを AffiliateItem に変換して addedItems に積む
- *
- * @param searxngResults  SearXNGから取得した検索結果一覧
- * @param existingItems   既にTier1で取得済みのアイテム一覧
  */
 export function mergeSearXNGResults(
   searxngResults: SearXNGResult[],
@@ -208,12 +258,10 @@ export function mergeSearXNGResults(
   let skippedDuplicate = 0;
 
   searxngResults.forEach((result, i) => {
-    // 既存（Tier1）との重複チェックは「変換前」のtitleで行う
     if (isDuplicateOfExisting(result.title ?? '', existingItems)) {
       skippedDuplicate++;
       return;
     }
-    // 既に追加済みのSearXNG結果同士の重複もチェック
     if (isDuplicateOfExisting(result.title ?? '', addedItems)) {
       skippedDuplicate++;
       return;
