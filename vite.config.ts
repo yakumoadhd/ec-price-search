@@ -12,7 +12,7 @@ export default defineConfig(() => {
     },
     build: {
       // Fire HD10 (Silk browser) 対応: ES2015ターゲットに下げる
-      target: 'es2015',
+      target: 'es2020',
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
