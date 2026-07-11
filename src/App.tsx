@@ -4,17 +4,14 @@ import { AffiliateItem, parseUnitPrice } from './types';
 import { analyzeProductNameWithGemini, GeminiAnalyzeResponse } from './geminiService';
 import GoogleLoginButton from './components/GoogleLoginButton';
 
-// ===== 定数 =====
 const API_BASE = '';
 const MAX_RETRIES = 2;
 
-// ===== ユーティリティ =====
 const formatPrice = (price: number): string =>
   new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY' }).format(price);
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// ===== 状態型 =====
 interface AppState {
   query: string;
   items: AffiliateItem[];
@@ -24,7 +21,6 @@ interface AppState {
   isGeminiLoading: boolean;
 }
 
-// ===== モール表示名 =====
 const MALL_LABEL: Record<AffiliateItem['mall'], string> = {
   amazon: 'Amazon',
   rakuten: '楽天',
@@ -41,8 +37,7 @@ const MALL_COLOR: Record<AffiliateItem['mall'], string> = {
   other: 'bg-gray-100 text-gray-600',
 };
 
-// ===== メインコンポーネント =====
-function App() { 
+function App() {
   const [state, setState] = useState<AppState>({
     query: '',
     items: [],
@@ -57,122 +52,66 @@ function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // トークン期限切れハンドラ
   const handleTokenExpired = useCallback(() => {
     setToken(null);
     setIsLoggedIn(false);
-    setState(prev => ({
-      ...prev,
-      error: 'セッションが期限切れです。再ログインしてください。',
-    }));
+    setState(prev => ({ ...prev, error: 'セッションが期限切れです。再ログインしてください。' }));
   }, []);
 
-  // Googleログイン成功
   const handleLoginSuccess = useCallback((accessToken: string) => {
     setToken(accessToken);
     setIsLoggedIn(true);
     setState(prev => ({ ...prev, error: null }));
   }, []);
 
-  // Gemini分析（検索後に非同期実行）
-  const runGeminiAnalysis = useCallback(async (
-    query: string,
-    accessToken: string
-  ) => {
+  const runGeminiAnalysis = useCallback(async (query: string, accessToken: string) => {
     setState(prev => ({ ...prev, isGeminiLoading: true }));
     const result = await analyzeProductNameWithGemini(query, accessToken, handleTokenExpired);
-    setState(prev => ({
-      ...prev,
-      geminiResult: result,
-      isGeminiLoading: false,
-    }));
+    setState(prev => ({ ...prev, geminiResult: result, isGeminiLoading: false }));
   }, [handleTokenExpired]);
 
-  // 検索実行
   const handleSearch = useCallback(async (retryCount = 0) => {
     const q = inputValue.trim();
     if (!q) return;
-
     if (!isLoggedIn || !token) {
-      setState(prev => ({
-        ...prev,
-        error: 'Googleアカウントでログインしてください。',
-      }));
+      setState(prev => ({ ...prev, error: 'Googleアカウントでログインしてください。' }));
       return;
     }
-
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
+    if (abortControllerRef.current) abortControllerRef.current.abort();
     abortControllerRef.current = new AbortController();
-
-    setState(prev => ({
-      ...prev,
-      isLoading: true,
-      error: null,
-      items: [],
-      geminiResult: null,
-      query: q,
-    }));
-
+    setState(prev => ({ ...prev, isLoading: true, error: null, items: [], geminiResult: null, query: q }));
     try {
       const response = await fetch(`${API_BASE}/api/search`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
         body: JSON.stringify({ query: q }),
         signal: abortControllerRef.current.signal,
       });
-
-      if (response.status === 401) {
-        handleTokenExpired();
-        return;
-      }
-
+      if (response.status === 401) { handleTokenExpired(); return; }
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `サーバーエラー: ${response.status}`);
+        throw new Error((errorData as any).error || `サーバーエラー: ${response.status}`);
       }
-
       const data = await response.json();
       const rawItems: AffiliateItem[] = (data.items || data.results || []).map(
         (item: AffiliateItem, i: number) => ({ ...item, id: `${i}` })
       );
-
-      setState(prev => ({
-        ...prev,
-        items: rawItems,
-        isLoading: false,
-      }));
-
-      // Gemini分析を並走
-      if (q) {
-        runGeminiAnalysis(q, token);
-      }
+      setState(prev => ({ ...prev, items: rawItems, isLoading: false }));
+      if (q) runGeminiAnalysis(q, token);
     } catch (err: any) {
       if (err.name === 'AbortError') return;
-
       if (retryCount < MAX_RETRIES) {
         await sleep(1000 * (retryCount + 1));
         return handleSearch(retryCount + 1);
       }
-
-      setState(prev => ({
-        ...prev,
-        isLoading: false,
-        error: err.message || '検索中にエラーが発生しました。',
-      }));
+      setState(prev => ({ ...prev, isLoading: false, error: err.message || '検索中にエラーが発生しました。' }));
     }
   }, [inputValue, isLoggedIn, token, handleTokenExpired, runGeminiAnalysis]);
 
-  // Enterキー
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') handleSearch();
   }, [handleSearch]);
 
-  // クリーンアップ
   useEffect(() => {
     return () => { abortControllerRef.current?.abort(); };
   }, []);
@@ -181,7 +120,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* ヘッダー */}
       <header className="bg-white shadow-sm sticky top-0 z-10">
         <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
           <h1 className="text-xl font-bold text-gray-800">🛒 EC価格比較</h1>
@@ -192,9 +130,7 @@ function App() {
           />
         </div>
       </header>
-
       <main className="max-w-3xl mx-auto px-4 py-6">
-        {/* 検索バー */}
         <div className="flex gap-2 mb-6">
           <input
             type="text"
@@ -214,14 +150,12 @@ function App() {
           </button>
         </div>
 
-        {/* エラー */}
         {error && (
           <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
             ⚠️ {error}
           </div>
         )}
 
-        {/* ローディング */}
         {isLoading && (
           <div className="text-center py-16">
             <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-3" />
@@ -229,13 +163,12 @@ function App() {
           </div>
         )}
 
-        {/* Gemini分析結果 */}
         {(isGeminiLoading || geminiResult) && (
           <div className="mb-5 p-4 bg-purple-50 border border-purple-200 rounded-lg">
             <p className="text-sm font-semibold text-purple-700 mb-1">🤖 Gemini 商品名解析</p>
             {isGeminiLoading ? (
               <p className="text-purple-500 text-sm animate-pulse">解析中...</p>
-            ) : geminiResult?.success ? (
+            ) : geminiResult && geminiResult.success ? (
               <div className="flex flex-wrap gap-3 text-sm text-gray-700">
                 {geminiResult.brand && (
                   <span>🏷️ <span className="font-medium">ブランド:</span> {geminiResult.brand}</span>
@@ -248,37 +181,34 @@ function App() {
                 )}
               </div>
             ) : (
-              <p className="text-gray-400 text-sm">解析結果なし ({geminiResult?.error})</p>
+              <p className="text-gray-400 text-sm">
+                解析結果なし ({geminiResult ? geminiResult.error : ''})
+              </p>
             )}
           </div>
         )}
 
-        {/* 検索結果一覧 */}
         {items.length > 0 && (
           <div>
-            <p className="text-sm text-gray-500 mb-3">
-              「{query}」 — {items.length}件
-            </p>
+            <p className="text-sm text-gray-500 mb-3">「{query}」 — {items.length}件</p>
             <div className="space-y-3">
               {items.map((item) => {
                 const up = parseUnitPrice(item.unit_price);
+                const itemKey = item.id !== undefined ? item.id : String(item.rank);
                 return (
                   
-                    key={item.id ?? item.rank}
+                    key={itemKey}
                     href={item.affiliate_url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="block bg-white rounded-xl shadow-sm border border-gray-100 hover:border-blue-200 hover:shadow-md transition-all p-4"
                   >
                     <div className="flex gap-3">
-                      {/* 順位 */}
                       <div className="shrink-0 w-8 text-center">
                         <span className="text-xl font-bold text-gray-300">
                           {item.rank === 1 ? '🥇' : item.rank === 2 ? '🥈' : item.rank === 3 ? '🥉' : item.rank}
                         </span>
                       </div>
-
-                      {/* サムネ */}
                       {item.image_url && (
                         <img
                           src={item.image_url}
@@ -287,8 +217,6 @@ function App() {
                           loading="lazy"
                         />
                       )}
-
-                      {/* 情報 */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
                           <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${MALL_COLOR[item.mall]}`}>
@@ -298,37 +226,25 @@ function App() {
                         <p className="text-sm font-medium text-gray-800 line-clamp-2 mb-2">
                           {item.raw_name}
                         </p>
-
-                        {/* 価格情報 */}
                         <div className="flex flex-wrap items-end gap-3">
                           <div>
                             <p className="text-xs text-gray-400">販売価格</p>
-                            <p className="text-lg font-bold text-blue-600">
-                              {formatPrice(item.price)}
-                            </p>
+                            <p className="text-lg font-bold text-blue-600">{formatPrice(item.price)}</p>
                           </div>
                           {item.shipping_fee > 0 && (
-                            <p className="text-xs text-gray-400 mb-1">
-                              +送料 {formatPrice(item.shipping_fee)}
-                            </p>
+                            <p className="text-xs text-gray-400 mb-1">+送料 {formatPrice(item.shipping_fee)}</p>
                           )}
                           {item.shipping_fee === 0 && (
                             <span className="text-xs text-green-600 font-medium mb-1">送料無料</span>
                           )}
                           {item.point > 0 && (
-                            <p className="text-xs text-orange-500 mb-1">
-                              P{item.point}還元
-                            </p>
+                            <p className="text-xs text-orange-500 mb-1">P{item.point}還元</p>
                           )}
                           <div className="ml-auto text-right">
                             <p className="text-xs text-gray-400">実質合計</p>
-                            <p className="text-base font-bold text-green-600">
-                              {formatPrice(item.effective_total)}
-                            </p>
+                            <p className="text-base font-bold text-green-600">{formatPrice(item.effective_total)}</p>
                           </div>
                         </div>
-
-                        {/* 単価 */}
                         {item.total_units > 0 && (
                           <p className="text-xs text-gray-400 mt-1">
                             単価: {up.integer}.{up.decimal}円 / {item.total_units}個
@@ -343,7 +259,6 @@ function App() {
           </div>
         )}
 
-        {/* 結果なし */}
         {!isLoading && query && items.length === 0 && !error && (
           <div className="text-center py-16 text-gray-400">
             <p className="text-4xl mb-3">🔍</p>
@@ -351,7 +266,6 @@ function App() {
           </div>
         )}
 
-        {/* 初期状態 */}
         {!query && !isLoading && (
           <div className="text-center py-16 text-gray-400">
             <p className="text-5xl mb-4">🛒</p>
@@ -366,4 +280,6 @@ function App() {
       </main>
     </div>
   );
-}export default App;
+}
+
+export default App;
