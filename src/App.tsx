@@ -1,297 +1,374 @@
-// src/App.tsx
-import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { AffiliateItem, parseUnitPrice } from './types';
-import { analyzeProductNameWithGemini, GeminiAnalyzeResponse } from './geminiService';
-import GoogleLoginButton from './components/GoogleLoginButton';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { SearchInput } from './components/SearchInput';
+import { ResultCard } from './components/ResultCard';
+import { FavoritesList } from './components/FavoritesList';
+import { SettingsPage } from './components/SettingsPage';
+import { DisclaimerModal } from './components/DisclaimerModal';
+import { GoogleLoginButton } from './components/GoogleLoginButton';
+import { DropdownFilter } from './components/DropdownFilter';
+import { AffiliateItem } from './types';
+import { PointSettings, loadSettings, calcEffectiveTotal } from './pointSettings';
+import { Settings, Heart, ArrowUpDown, LogIn } from 'lucide-react';
 
-const API_BASE = '';
-const MAX_RETRIES = 2;
+const MAX_HISTORY = 20;
 
-const formatPrice = (price: number): string =>
-  new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY' }).format(price);
+type SortMode = 'effective' | 'unit';
+type View = 'search' | 'favorites';
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-interface AppState {
-  query: string;
-  items: AffiliateItem[];
-  isLoading: boolean;
-  error: string | null;
-  geminiResult: GeminiAnalyzeResponse | null;
-  isGeminiLoading: boolean;
+function loadHistory(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem('search_history') || '[]');
+  } catch {
+    return [];
+  }
 }
 
-const MALL_LABEL: Record<AffiliateItem['mall'], string> = {
-  amazon: 'Amazon',
-  rakuten: '楽天',
-  yahoo: 'Yahoo!',
-  yodobashi: 'ヨドバシ',
-  other: 'その他',
-};
+function saveHistory(h: string[]) {
+  try {
+    localStorage.setItem('search_history', JSON.stringify(h));
+  } catch {}
+}
 
-const MALL_COLOR: Record<AffiliateItem['mall'], string> = {
-  amazon: 'bg-orange-100 text-orange-700',
-  rakuten: 'bg-red-100 text-red-700',
-  yahoo: 'bg-purple-100 text-purple-700',
-  yodobashi: 'bg-yellow-100 text-yellow-700',
-  other: 'bg-gray-100 text-gray-600',
-};
+function loadFavorites(): AffiliateItem[] {
+  try {
+    return JSON.parse(localStorage.getItem('favorites') || '[]');
+  } catch {
+    return [];
+  }
+}
 
-const RANK_ICON = (rank: number): string => {
-  if (rank === 1) return '🥇';
-  if (rank === 2) return '🥈';
-  if (rank === 3) return '🥉';
-  return String(rank);
-};
+function saveFavorites(favs: AffiliateItem[]) {
+  try {
+    localStorage.setItem('favorites', JSON.stringify(favs));
+  } catch {}
+}
 
-function ItemCard({ item }: { item: AffiliateItem }) {
-  const up = parseUnitPrice(item.unit_price);
-  const itemKey = item.id !== undefined ? item.id : String(item.rank);
-  const handleClick = () => {
-    window.open(item.affiliate_url, '_blank', 'noopener,noreferrer');
-  };
+export default function App() {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<AffiliateItem[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>('effective');
+  const [selectedCapacity, setSelectedCapacity] = useState<string | null>(null);
+  const [view, setView] = useState<View>('search');
+  const [favorites, setFavorites] = useState<AffiliateItem[]>(loadFavorites);
+  const [searchHistory, setSearchHistory] = useState<string[]>(loadHistory);
+  const [settings, setSettings] = useState<PointSettings>(loadSettings);
+  const [showSettings, setShowSettings] = useState(false);
+  const [isDisclaimerOpen, setIsDisclaimerOpen] = useState(false);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const accessTokenRef = useRef<string | null>(null);
+
+  // ── アクセストークン管理 ──────────────────────────
+  const handleTokenChange = useCallback((token: string | null) => {
+    accessTokenRef.current = token;
+    setAccessToken(token);
+  }, []);
+
+  // ── お気に入り ────────────────────────────────────
+  const handleToggleFavorite = useCallback((item: AffiliateItem) => {
+    setFavorites(prev => {
+      const exists = prev.some(f => f.id === item.id);
+      const next = exists ? prev.filter(f => f.id !== item.id) : [...prev, item];
+      saveFavorites(next);
+      return next;
+    });
+  }, []);
+
+  const favoriteIds = useMemo(() => new Set(favorites.map(f => f.id)), [favorites]);
+  const favoriteNames = useMemo(() => [...new Set(favorites.map(f => f.raw_name || '').filter(Boolean))], [favorites]);
+
+  // ── 検索 ─────────────────────────────────────────
+  const handleSearch = useCallback(async (overrideQuery?: string) => {
+    const q = (overrideQuery ?? query).trim();
+    if (!q) return;
+
+    setIsLoading(true);
+    setError(null);
+    setResults([]);
+    setSelectedCapacity(null);
+
+    // 履歴更新
+    setSearchHistory(prev => {
+      const next = [q, ...prev.filter(h => h !== q)].slice(0, MAX_HISTORY);
+      saveHistory(next);
+      return next;
+    });
+
+    if (overrideQuery !== undefined) setQuery(overrideQuery);
+
+    try {
+      // SearXNG + Yahoo + Amazon を並列で叩く
+      const searches: Promise<AffiliateItem[]>[] = [];
+
+      // /api/search (ec-search-api Python → Yahoo/楽天)
+      searches.push(
+        fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keyword: q }),
+        }).then(async r => {
+          if (!r.ok) throw new Error(`search ${r.status}`);
+          const data = await r.json();
+          return (data.results || data.items || data || []) as AffiliateItem[];
+        }).catch(() => [])
+      );
+
+      // /api/yahoo (Yahoo Shopping API)
+      searches.push(
+        fetch('/api/yahoo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keyword: q }),
+        }).then(async r => {
+          if (!r.ok) throw new Error(`yahoo ${r.status}`);
+          const data = await r.json();
+          return (data.results || data.items || data || []) as AffiliateItem[];
+        }).catch(() => [])
+      );
+
+      // /api/amazon (Amazon scraper)
+      searches.push(
+        fetch('/api/amazon', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keyword: q }),
+        }).then(async r => {
+          if (!r.ok) throw new Error(`amazon ${r.status}`);
+          const data = await r.json();
+          return (data.results || data.items || data || []) as AffiliateItem[];
+        }).catch(() => [])
+      );
+
+      const allArrays = await Promise.all(searches);
+      const merged: AffiliateItem[] = [];
+      const seenIds = new Set<string>();
+
+      for (const arr of allArrays) {
+        for (const item of arr) {
+          if (item.id && !seenIds.has(item.id)) {
+            seenIds.add(item.id);
+            merged.push(item);
+          }
+        }
+      }
+
+      if (merged.length === 0) {
+        setError('検索結果が見つかりませんでした。別のキーワードを試してください。');
+      }
+
+      setResults(merged);
+    } catch (e) {
+      setError('検索中にエラーが発生しました。しばらくしてから再試行してください。');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [query]);
+
+  // ── ソート・フィルター ─────────────────────────────
+  const capacities = useMemo(() => {
+    const caps = new Set<string>();
+    results.forEach(item => {
+      const capKey = item.capacity || (item.total_units ? `${item.total_units}個/本` : null);
+      if (capKey) caps.add(capKey);
+    });
+    return Array.from(caps).sort();
+  }, [results]);
+
+  const sortedResults = useMemo(() => {
+    let list = [...results];
+
+    if (selectedCapacity) {
+      list = list.filter(item => {
+        const capKey = item.capacity || (item.total_units ? `${item.total_units}個/本` : null);
+        return capKey === selectedCapacity;
+      });
+    }
+
+    list.sort((a, b) => {
+      if (sortMode === 'unit') {
+        const getUnitPrice = (item: AffiliateItem): number => {
+          if (typeof item.unit_price === 'number') return item.unit_price;
+          if (typeof item.unit_price === 'string') return parseFloat(item.unit_price) || 0;
+          if (item.unit_price && typeof item.unit_price === 'object') {
+            return parseFloat(`${item.unit_price.integer_part}.${item.unit_price.decimal_part}`) || 0;
+          }
+          return 0;
+        };
+        return getUnitPrice(a) - getUnitPrice(b);
+      }
+      return (a.effective_total || 0) - (b.effective_total || 0);
+    });
+
+    return list;
+  }, [results, sortMode, selectedCapacity]);
+
+  // ── SettingsPage ──────────────────────────────────
+  const handleSettingsChange = useCallback((s: PointSettings) => {
+    setSettings(s);
+  }, []);
+
+  // ── お気に入りビュー ──────────────────────────────
+  if (view === 'favorites') {
+    return (
+      <FavoritesList
+        favorites={favorites}
+        onToggleFavorite={handleToggleFavorite}
+        onClose={() => setView('search')}
+        query={query}
+        setQuery={setQuery}
+        handleSearch={handleSearch}
+        favoriteNames={favoriteNames}
+        searchHistory={searchHistory}
+        onSettingsChange={handleSettingsChange}
+      />
+    );
+  }
+
+  // ── メインビュー ──────────────────────────────────
   return (
-    <div
-      key={itemKey}
-      onClick={handleClick}
-      className="bg-white rounded-xl shadow-sm border border-gray-100 hover:border-blue-200 hover:shadow-md transition-all p-4 cursor-pointer"
-    >
-      <div className="flex gap-3">
-        <div className="shrink-0 w-8 text-center">
-          <span className="text-xl font-bold text-gray-300">
-            {RANK_ICON(item.rank)}
-          </span>
-        </div>
-        {item.image_url && (
-          <img
-            src={item.image_url}
-            alt={item.raw_name}
-            className="w-16 h-16 object-contain rounded-lg border border-gray-100 shrink-0"
-            loading="lazy"
-          />
-        )}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className={'text-xs font-medium px-2 py-0.5 rounded-full ' + MALL_COLOR[item.mall]}>
-              {MALL_LABEL[item.mall]}
-            </span>
+    <div className="min-h-screen bg-gray-50 flex flex-col">
+      {/* ヘッダー */}
+      <header className="bg-gray-50/95 backdrop-blur-md sticky top-0 z-40 border-b border-gray-200 shadow-sm">
+        <div className="max-w-2xl mx-auto px-3 py-2 flex flex-col gap-2">
+          {/* 1行目：タイトル + ボタン群 */}
+          <div className="flex items-center gap-2 h-[40px]">
+            <h1 className="text-[17px] font-black text-gray-900 tracking-tight shrink-0">
+              💰 Price Ranking
+            </h1>
+            <div className="flex-1" />
+
+            {/* Googleログインボタン */}
+            <GoogleLoginButton onTokenChange={handleTokenChange} />
+
+            {/* お気に入り */}
+            <button
+              onClick={() => setView('favorites')}
+              className="relative flex items-center justify-center h-[36px] aspect-square bg-white border border-gray-200 hover:bg-gray-100 rounded-2xl transition-all shadow-sm"
+              title="お気に入り"
+            >
+              <Heart className="w-5 h-5 text-red-400" />
+              {favorites.length > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-black rounded-full w-4 h-4 flex items-center justify-center leading-none">
+                  {favorites.length > 99 ? '99+' : favorites.length}
+                </span>
+              )}
+            </button>
+
+            {/* 設定 */}
+            <button
+              onClick={() => setShowSettings(true)}
+              className="flex items-center justify-center h-[36px] aspect-square bg-white border border-gray-200 hover:bg-gray-100 rounded-2xl transition-all shadow-sm"
+              title="ポイント設定"
+            >
+              <Settings className="w-5 h-5 text-gray-600" />
+            </button>
           </div>
-          <p className="text-sm font-medium text-gray-800 line-clamp-2 mb-2">
-            {item.raw_name}
-          </p>
-          <div className="flex flex-wrap items-end gap-3">
-            <div>
-              <p className="text-xs text-gray-400">販売価格</p>
-              <p className="text-lg font-bold text-blue-600">{formatPrice(item.price)}</p>
-            </div>
-            {item.shipping_fee > 0 && (
-              <p className="text-xs text-gray-400 mb-1">+送料 {formatPrice(item.shipping_fee)}</p>
-            )}
-            {item.shipping_fee === 0 && (
-              <span className="text-xs text-green-600 font-medium mb-1">送料無料</span>
-            )}
-            {item.point > 0 && (
-              <p className="text-xs text-orange-500 mb-1">P{item.point}還元</p>
-            )}
-            <div className="ml-auto text-right">
-              <p className="text-xs text-gray-400">実質合計</p>
-              <p className="text-base font-bold text-green-600">{formatPrice(item.effective_total)}</p>
-            </div>
+
+          {/* 2行目：検索窓 */}
+          <div className="h-[44px] w-full">
+            <SearchInput
+              query={query}
+              onChange={e => setQuery(e.target.value)}
+              onSearch={handleSearch}
+              isLoading={isLoading}
+              history={searchHistory}
+              favoriteNames={favoriteNames}
+            />
           </div>
-          {item.total_units > 0 && (
-            <p className="text-xs text-gray-400 mt-1">
-              単価: {up.integer}.{up.decimal}円 / {item.total_units}個
-            </p>
+
+          {/* 3行目：フィルター + ソート（検索結果あり時のみ） */}
+          {results.length > 0 && (
+            <div className="flex items-center gap-2 h-[36px]">
+              {capacities.length > 0 && (
+                <div className="flex-1 h-full">
+                  <DropdownFilter
+                    options={capacities}
+                    selectedValue={selectedCapacity}
+                    onChange={setSelectedCapacity}
+                  />
+                </div>
+              )}
+              <div className="flex gap-1 bg-gray-200/60 p-1 rounded-lg border border-gray-100 shadow-inner h-full shrink-0">
+                <button
+                  onClick={() => setSortMode('effective')}
+                  className={`px-3 text-[11px] font-bold h-full rounded-md transition-all ${sortMode === 'effective' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}
+                >
+                  実質価格
+                </button>
+                <button
+                  onClick={() => setSortMode('unit')}
+                  className={`px-3 text-[11px] font-bold h-full rounded-md transition-all ${sortMode === 'unit' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}
+                >
+                  1個あたり
+                </button>
+              </div>
+            </div>
           )}
         </div>
-      </div>
-    </div>
-  );
-}
-
-function App() {
-  const [state, setState] = useState<AppState>({
-    query: '',
-    items: [],
-    isLoading: false,
-    error: null,
-    geminiResult: null,
-    isGeminiLoading: false,
-  });
-
-  const [inputValue, setInputValue] = useState('');
-  const [token, setToken] = useState<string | null>(null);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const abortControllerRef = useRef<AbortController | null>(null);
-
-  const handleTokenExpired = useCallback(() => {
-    setToken(null);
-    setIsLoggedIn(false);
-    setState(prev => ({ ...prev, error: 'セッションが期限切れです。再ログインしてください。' }));
-  }, []);
-
-  const handleLoginSuccess = useCallback((accessToken: string) => {
-    setToken(accessToken);
-    setIsLoggedIn(true);
-    setState(prev => ({ ...prev, error: null }));
-  }, []);
-
-  const runGeminiAnalysis = useCallback(async (query: string, accessToken: string) => {
-    setState(prev => ({ ...prev, isGeminiLoading: true }));
-    const result = await analyzeProductNameWithGemini(query, accessToken, handleTokenExpired);
-    setState(prev => ({ ...prev, geminiResult: result, isGeminiLoading: false }));
-  }, [handleTokenExpired]);
-
-  const handleSearch = useCallback(async (retryCount = 0) => {
-    const q = inputValue.trim();
-    if (!q) return;
-    if (!isLoggedIn || !token) {
-      setState(prev => ({ ...prev, error: 'Googleアカウントでログインしてください。' }));
-      return;
-    }
-    if (abortControllerRef.current) abortControllerRef.current.abort();
-    abortControllerRef.current = new AbortController();
-    setState(prev => ({ ...prev, isLoading: true, error: null, items: [], geminiResult: null, query: q }));
-    try {
-      const response = await fetch(API_BASE + '/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-        body: JSON.stringify({ query: q }),
-        signal: abortControllerRef.current.signal,
-      });
-      if (response.status === 401) { handleTokenExpired(); return; }
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error((errorData as any).error || 'サーバーエラー: ' + response.status);
-      }
-      const data = await response.json();
-      const rawItems: AffiliateItem[] = (data.items || data.results || []).map(
-        (item: AffiliateItem, i: number) => ({ ...item, id: String(i) })
-      );
-      setState(prev => ({ ...prev, items: rawItems, isLoading: false }));
-      if (q) runGeminiAnalysis(q, token);
-    } catch (err: any) {
-      if (err.name === 'AbortError') return;
-      if (retryCount < MAX_RETRIES) {
-        await sleep(1000 * (retryCount + 1));
-        return handleSearch(retryCount + 1);
-      }
-      setState(prev => ({ ...prev, isLoading: false, error: err.message || '検索中にエラーが発生しました。' }));
-    }
-  }, [inputValue, isLoggedIn, token, handleTokenExpired, runGeminiAnalysis]);
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') handleSearch();
-  }, [handleSearch]);
-
-  useEffect(() => {
-    return () => { if (abortControllerRef.current) abortControllerRef.current.abort(); };
-  }, []);
-
-  const { query, items, isLoading, error, geminiResult, isGeminiLoading } = state;
-
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white shadow-sm sticky top-0 z-10">
-        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
-          <h1 className="text-xl font-bold text-gray-800">🛒 EC価格比較</h1>
-          <GoogleLoginButton
-            onSuccess={handleLoginSuccess}
-            onExpired={handleTokenExpired}
-            isLoggedIn={isLoggedIn}
-          />
-        </div>
       </header>
-      <main className="max-w-3xl mx-auto px-4 py-6">
-        <div className="flex gap-2 mb-6">
-          <input
-            type="text"
-            value={inputValue}
-            onChange={e => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="商品名を入力..."
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-base"
-            disabled={isLoading}
-          />
-          <button
-            onClick={() => handleSearch()}
-            disabled={isLoading || !inputValue.trim()}
-            className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
-          >
-            {isLoading ? '検索中…' : '検索'}
-          </button>
-        </div>
 
-        {error && (
-          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
-            ⚠️ {error}
-          </div>
-        )}
-
+      {/* メインコンテンツ */}
+      <main className="flex-1 overflow-y-auto px-3 py-4 max-w-2xl mx-auto w-full">
+        {/* ローディング */}
         {isLoading && (
-          <div className="text-center py-16">
-            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-3" />
-            <p className="text-gray-400">検索中...</p>
+          <div className="flex flex-col items-center justify-center py-16 gap-4">
+            <div className="w-10 h-10 border-4 border-red-500 border-t-transparent rounded-full animate-spin" />
+            <p className="text-sm font-bold text-gray-500">最安値を検索中…</p>
           </div>
         )}
 
-        {(isGeminiLoading || geminiResult) && (
-          <div className="mb-5 p-4 bg-purple-50 border border-purple-200 rounded-lg">
-            <p className="text-sm font-semibold text-purple-700 mb-1">🤖 Gemini 商品名解析</p>
-            {isGeminiLoading ? (
-              <p className="text-purple-500 text-sm animate-pulse">解析中...</p>
-            ) : geminiResult && geminiResult.success ? (
-              <div className="flex flex-wrap gap-3 text-sm text-gray-700">
-                {geminiResult.brand && (
-                  <span>🏷️ ブランド: {geminiResult.brand}</span>
-                )}
-                {geminiResult.modelNumber && (
-                  <span>🔢 型番: {geminiResult.modelNumber}</span>
-                )}
-                {geminiResult.capacity && (
-                  <span>📦 容量: {geminiResult.capacity}</span>
-                )}
-              </div>
-            ) : (
-              <p className="text-gray-400 text-sm">
-                解析結果なし
-              </p>
-            )}
+        {/* エラー */}
+        {!isLoading && error && (
+          <div className="flex flex-col items-center justify-center py-16 gap-3 text-gray-400">
+            <span className="text-4xl">😕</span>
+            <p className="text-sm font-bold text-center">{error}</p>
           </div>
         )}
 
-        {items.length > 0 && (
-          <div>
-            <p className="text-sm text-gray-500 mb-3">「{query}」 — {items.length}件</p>
-            <div className="space-y-3">
-              {items.map((item) => (
-                <ItemCard key={item.id} item={item} />
-              ))}
-            </div>
+        {/* 初期状態 */}
+        {!isLoading && !error && results.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-16 gap-3 text-gray-400">
+            <span className="text-5xl">🔍</span>
+            <p className="text-sm font-bold">商品名を入力して検索してください</p>
+            <p className="text-[11px] text-gray-300 text-center">Amazon・楽天・Yahoo!・ヨドバシを<br/>一気に比較できます</p>
           </div>
         )}
 
-        {!isLoading && query && items.length === 0 && !error && (
-          <div className="text-center py-16 text-gray-400">
-            <p className="text-4xl mb-3">🔍</p>
-            <p>「{query}」の検索結果が見つかりませんでした。</p>
-          </div>
-        )}
-
-        {!query && !isLoading && (
-          <div className="text-center py-16 text-gray-400">
-            <p className="text-5xl mb-4">🛒</p>
-            <p className="text-lg">商品名を入力して価格を比較しよう！</p>
-            {!isLoggedIn && (
-              <p className="text-sm mt-2 text-orange-400">
-                ※ 検索にはGoogleログインが必要です
-              </p>
-            )}
+        {/* 検索結果 */}
+        {!isLoading && sortedResults.length > 0 && (
+          <div className="flex flex-col gap-3">
+            <p className="text-[11px] text-gray-400 font-medium px-1">
+              {sortedResults.length}件 / {results.length}件中
+              {selectedCapacity && <span className="ml-1 text-blue-500">（{selectedCapacity}）</span>}
+            </p>
+            {sortedResults.map(item => (
+              <ResultCard
+                key={item.id}
+                item={item}
+                isFavorite={favoriteIds.has(item.id)}
+                onToggleFavorite={handleToggleFavorite}
+                sortMode={sortMode}
+              />
+            ))}
           </div>
         )}
       </main>
+
+      {/* 設定ページ */}
+      {showSettings && (
+        <SettingsPage
+          onClose={() => setShowSettings(false)}
+          onSettingsChange={handleSettingsChange}
+          onOpenDisclaimer={() => { setShowSettings(false); setIsDisclaimerOpen(true); }}
+        />
+      )}
+
+      {/* 免責事項モーダル */}
+      <DisclaimerModal
+        isOpen={isDisclaimerOpen}
+        onClose={() => setIsDisclaimerOpen(false)}
+      />
     </div>
   );
 }
-
-export default App;
