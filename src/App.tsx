@@ -4,11 +4,11 @@ import { ResultCard } from './components/ResultCard';
 import { FavoritesList } from './components/FavoritesList';
 import { SettingsPage } from './components/SettingsPage';
 import { DisclaimerModal } from './components/DisclaimerModal';
-import { GoogleLoginButton } from './components/GoogleLoginButton';
+import GoogleLoginButton from './components/GoogleLoginButton';
 import { DropdownFilter } from './components/DropdownFilter';
 import { AffiliateItem } from './types';
-import { PointSettings, loadSettings, calcEffectiveTotal } from './pointSettings';
-import { Settings, Heart, ArrowUpDown, LogIn } from 'lucide-react';
+import { PointSettings, loadSettings } from './pointSettings';
+import { Settings, Heart } from 'lucide-react';
 
 const MAX_HISTORY = 20;
 
@@ -16,31 +16,18 @@ type SortMode = 'effective' | 'unit';
 type View = 'search' | 'favorites';
 
 function loadHistory(): string[] {
-  try {
-    return JSON.parse(localStorage.getItem('search_history') || '[]');
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(localStorage.getItem('search_history') || '[]'); }
+  catch { return []; }
 }
-
 function saveHistory(h: string[]) {
-  try {
-    localStorage.setItem('search_history', JSON.stringify(h));
-  } catch {}
+  try { localStorage.setItem('search_history', JSON.stringify(h)); } catch {}
 }
-
 function loadFavorites(): AffiliateItem[] {
-  try {
-    return JSON.parse(localStorage.getItem('favorites') || '[]');
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(localStorage.getItem('favorites') || '[]'); }
+  catch { return []; }
 }
-
 function saveFavorites(favs: AffiliateItem[]) {
-  try {
-    localStorage.setItem('favorites', JSON.stringify(favs));
-  } catch {}
+  try { localStorage.setItem('favorites', JSON.stringify(favs)); } catch {}
 }
 
 export default function App() {
@@ -56,13 +43,18 @@ export default function App() {
   const [settings, setSettings] = useState<PointSettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [isDisclaimerOpen, setIsDisclaimerOpen] = useState(false);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
   const accessTokenRef = useRef<string | null>(null);
 
-  // ── アクセストークン管理 ──────────────────────────
-  const handleTokenChange = useCallback((token: string | null) => {
+  // ── Google OAuth ──────────────────────────────────
+  const handleLoginSuccess = useCallback((token: string) => {
     accessTokenRef.current = token;
-    setAccessToken(token);
+    setIsLoggedIn(true);
+  }, []);
+
+  const handleLoginExpired = useCallback(() => {
+    accessTokenRef.current = null;
+    setIsLoggedIn(false);
   }, []);
 
   // ── お気に入り ────────────────────────────────────
@@ -76,7 +68,10 @@ export default function App() {
   }, []);
 
   const favoriteIds = useMemo(() => new Set(favorites.map(f => f.id)), [favorites]);
-  const favoriteNames = useMemo(() => [...new Set(favorites.map(f => f.raw_name || '').filter(Boolean))], [favorites]);
+  const favoriteNames = useMemo(() =>
+    [...new Set(favorites.map(f => f.raw_name || '').filter(Boolean))],
+    [favorites]
+  );
 
   // ── 検索 ─────────────────────────────────────────
   const handleSearch = useCallback(async (overrideQuery?: string) => {
@@ -88,77 +83,62 @@ export default function App() {
     setResults([]);
     setSelectedCapacity(null);
 
-    // 履歴更新
+    if (overrideQuery !== undefined) setQuery(overrideQuery);
+
     setSearchHistory(prev => {
       const next = [q, ...prev.filter(h => h !== q)].slice(0, MAX_HISTORY);
       saveHistory(next);
       return next;
     });
 
-    if (overrideQuery !== undefined) setQuery(overrideQuery);
-
     try {
-      // SearXNG + Yahoo + Amazon を並列で叩く
-      const searches: Promise<AffiliateItem[]>[] = [];
-
-      // /api/search (ec-search-api Python → Yahoo/楽天)
-      searches.push(
+      const [searchRes, yahooRes, amazonRes] = await Promise.all([
         fetch('/api/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ keyword: q }),
         }).then(async r => {
-          if (!r.ok) throw new Error(`search ${r.status}`);
+          if (!r.ok) return [];
           const data = await r.json();
           return (data.results || data.items || data || []) as AffiliateItem[];
-        }).catch(() => [])
-      );
+        }).catch(() => [] as AffiliateItem[]),
 
-      // /api/yahoo (Yahoo Shopping API)
-      searches.push(
         fetch('/api/yahoo', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ keyword: q }),
         }).then(async r => {
-          if (!r.ok) throw new Error(`yahoo ${r.status}`);
+          if (!r.ok) return [];
           const data = await r.json();
           return (data.results || data.items || data || []) as AffiliateItem[];
-        }).catch(() => [])
-      );
+        }).catch(() => [] as AffiliateItem[]),
 
-      // /api/amazon (Amazon scraper)
-      searches.push(
         fetch('/api/amazon', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ keyword: q }),
         }).then(async r => {
-          if (!r.ok) throw new Error(`amazon ${r.status}`);
+          if (!r.ok) return [];
           const data = await r.json();
           return (data.results || data.items || data || []) as AffiliateItem[];
-        }).catch(() => [])
-      );
+        }).catch(() => [] as AffiliateItem[]),
+      ]);
 
-      const allArrays = await Promise.all(searches);
+      // ID重複排除マージ
       const merged: AffiliateItem[] = [];
       const seenIds = new Set<string>();
-
-      for (const arr of allArrays) {
-        for (const item of arr) {
-          if (item.id && !seenIds.has(item.id)) {
-            seenIds.add(item.id);
-            merged.push(item);
-          }
+      for (const item of [...searchRes, ...yahooRes, ...amazonRes]) {
+        if (item.id && !seenIds.has(item.id)) {
+          seenIds.add(item.id);
+          merged.push(item);
         }
       }
 
+      setResults(merged);
       if (merged.length === 0) {
         setError('検索結果が見つかりませんでした。別のキーワードを試してください。');
       }
-
-      setResults(merged);
-    } catch (e) {
+    } catch {
       setError('検索中にエラーが発生しました。しばらくしてから再試行してください。');
     } finally {
       setIsLoading(false);
@@ -187,7 +167,7 @@ export default function App() {
 
     list.sort((a, b) => {
       if (sortMode === 'unit') {
-        const getUnitPrice = (item: AffiliateItem): number => {
+        const getUnit = (item: AffiliateItem): number => {
           if (typeof item.unit_price === 'number') return item.unit_price;
           if (typeof item.unit_price === 'string') return parseFloat(item.unit_price) || 0;
           if (item.unit_price && typeof item.unit_price === 'object') {
@@ -195,7 +175,7 @@ export default function App() {
           }
           return 0;
         };
-        return getUnitPrice(a) - getUnitPrice(b);
+        return getUnit(a) - getUnit(b);
       }
       return (a.effective_total || 0) - (b.effective_total || 0);
     });
@@ -203,7 +183,7 @@ export default function App() {
     return list;
   }, [results, sortMode, selectedCapacity]);
 
-  // ── SettingsPage ──────────────────────────────────
+  // ── Settings ──────────────────────────────────────
   const handleSettingsChange = useCallback((s: PointSettings) => {
     setSettings(s);
   }, []);
@@ -231,17 +211,20 @@ export default function App() {
       {/* ヘッダー */}
       <header className="bg-gray-50/95 backdrop-blur-md sticky top-0 z-40 border-b border-gray-200 shadow-sm">
         <div className="max-w-2xl mx-auto px-3 py-2 flex flex-col gap-2">
-          {/* 1行目：タイトル + ボタン群 */}
+
+          {/* 1行目 */}
           <div className="flex items-center gap-2 h-[40px]">
             <h1 className="text-[17px] font-black text-gray-900 tracking-tight shrink-0">
               💰 Price Ranking
             </h1>
             <div className="flex-1" />
 
-            {/* Googleログインボタン */}
-            <GoogleLoginButton onTokenChange={handleTokenChange} />
+            <GoogleLoginButton
+              onSuccess={handleLoginSuccess}
+              onExpired={handleLoginExpired}
+              isLoggedIn={isLoggedIn}
+            />
 
-            {/* お気に入り */}
             <button
               onClick={() => setView('favorites')}
               className="relative flex items-center justify-center h-[36px] aspect-square bg-white border border-gray-200 hover:bg-gray-100 rounded-2xl transition-all shadow-sm"
@@ -255,7 +238,6 @@ export default function App() {
               )}
             </button>
 
-            {/* 設定 */}
             <button
               onClick={() => setShowSettings(true)}
               className="flex items-center justify-center h-[36px] aspect-square bg-white border border-gray-200 hover:bg-gray-100 rounded-2xl transition-all shadow-sm"
@@ -277,7 +259,7 @@ export default function App() {
             />
           </div>
 
-          {/* 3行目：フィルター + ソート（検索結果あり時のみ） */}
+          {/* 3行目：フィルター + ソート */}
           {results.length > 0 && (
             <div className="flex items-center gap-2 h-[36px]">
               {capacities.length > 0 && (
@@ -292,13 +274,17 @@ export default function App() {
               <div className="flex gap-1 bg-gray-200/60 p-1 rounded-lg border border-gray-100 shadow-inner h-full shrink-0">
                 <button
                   onClick={() => setSortMode('effective')}
-                  className={`px-3 text-[11px] font-bold h-full rounded-md transition-all ${sortMode === 'effective' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}
+                  className={`px-3 text-[11px] font-bold h-full rounded-md transition-all ${
+                    sortMode === 'effective' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'
+                  }`}
                 >
                   実質価格
                 </button>
                 <button
                   onClick={() => setSortMode('unit')}
-                  className={`px-3 text-[11px] font-bold h-full rounded-md transition-all ${sortMode === 'unit' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}
+                  className={`px-3 text-[11px] font-bold h-full rounded-md transition-all ${
+                    sortMode === 'unit' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'
+                  }`}
                 >
                   1個あたり
                 </button>
@@ -309,8 +295,7 @@ export default function App() {
       </header>
 
       {/* メインコンテンツ */}
-      <main className="flex-1 overflow-y-auto px-3 py-4 max-w-2xl mx-auto w-full">
-        {/* ローディング */}
+      <main className="flex-1 px-3 py-4 max-w-2xl mx-auto w-full">
         {isLoading && (
           <div className="flex flex-col items-center justify-center py-16 gap-4">
             <div className="w-10 h-10 border-4 border-red-500 border-t-transparent rounded-full animate-spin" />
@@ -318,7 +303,6 @@ export default function App() {
           </div>
         )}
 
-        {/* エラー */}
         {!isLoading && error && (
           <div className="flex flex-col items-center justify-center py-16 gap-3 text-gray-400">
             <span className="text-4xl">😕</span>
@@ -326,21 +310,23 @@ export default function App() {
           </div>
         )}
 
-        {/* 初期状態 */}
         {!isLoading && !error && results.length === 0 && (
           <div className="flex flex-col items-center justify-center py-16 gap-3 text-gray-400">
             <span className="text-5xl">🔍</span>
             <p className="text-sm font-bold">商品名を入力して検索してください</p>
-            <p className="text-[11px] text-gray-300 text-center">Amazon・楽天・Yahoo!・ヨドバシを<br/>一気に比較できます</p>
+            <p className="text-[11px] text-gray-300 text-center">
+              Amazon・楽天・Yahoo!・ヨドバシを<br />一気に比較できます
+            </p>
           </div>
         )}
 
-        {/* 検索結果 */}
         {!isLoading && sortedResults.length > 0 && (
           <div className="flex flex-col gap-3">
             <p className="text-[11px] text-gray-400 font-medium px-1">
-              {sortedResults.length}件 / {results.length}件中
-              {selectedCapacity && <span className="ml-1 text-blue-500">（{selectedCapacity}）</span>}
+              {sortedResults.length}件
+              {selectedCapacity && (
+                <span className="ml-1 text-blue-500">（{selectedCapacity}）</span>
+              )}
             </p>
             {sortedResults.map(item => (
               <ResultCard
@@ -355,16 +341,17 @@ export default function App() {
         )}
       </main>
 
-      {/* 設定ページ */}
       {showSettings && (
         <SettingsPage
           onClose={() => setShowSettings(false)}
           onSettingsChange={handleSettingsChange}
-          onOpenDisclaimer={() => { setShowSettings(false); setIsDisclaimerOpen(true); }}
+          onOpenDisclaimer={() => {
+            setShowSettings(false);
+            setIsDisclaimerOpen(true);
+          }}
         />
       )}
 
-      {/* 免責事項モーダル */}
       <DisclaimerModal
         isOpen={isDisclaimerOpen}
         onClose={() => setIsDisclaimerOpen(false)}
