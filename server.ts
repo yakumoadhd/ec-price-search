@@ -171,7 +171,7 @@ async function startServer() {
       if (!query) return res.status(400).json({ error: 'query required' });
       const appId = process.env.YAHOO_CLIENT_ID;
       if (!appId) return res.status(500).json({ error: 'YAHOO_CLIENT_ID not set' });
-      const affiliateId = process.env.YAHOO_VC_AFFILIATE_ID || '';
+      const affiliateId = process.env.YAHOO_AFFILIATE_ID || '';
       const params = new URLSearchParams({
         appid: appId,
         query,
