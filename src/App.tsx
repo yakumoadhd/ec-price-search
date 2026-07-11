@@ -185,7 +185,7 @@ function App() {
   }, [handleSearch]);
 
   useEffect(() => {
-    return () => { abortControllerRef.current?.abort(); };
+    return () => { if (abortControllerRef.current) abortControllerRef.current.abort(); };
   }, []);
 
   const { query, items, isLoading, error, geminiResult, isGeminiLoading } = state;
