@@ -126,7 +126,7 @@ async function startServer() {
       const response = await fetch('https://ec-search-api-826846133648.asia-northeast1.run.app/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(req.body),
+        body: JSON.stringify({ keyword: req.body.query }),
       });
       if (!response.ok) {
         throw new Error(`API error: ${response.status}`);
