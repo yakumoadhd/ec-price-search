@@ -37,6 +37,78 @@ const MALL_COLOR: Record<AffiliateItem['mall'], string> = {
   other: 'bg-gray-100 text-gray-600',
 };
 
+const RANK_ICON = (rank: number): string => {
+  if (rank === 1) return '🥇';
+  if (rank === 2) return '🥈';
+  if (rank === 3) return '🥉';
+  return String(rank);
+};
+
+function ItemCard({ item }: { item: AffiliateItem }) {
+  const up = parseUnitPrice(item.unit_price);
+  const itemKey = item.id !== undefined ? item.id : String(item.rank);
+  const handleClick = () => {
+    window.open(item.affiliate_url, '_blank', 'noopener,noreferrer');
+  };
+  return (
+    <div
+      key={itemKey}
+      onClick={handleClick}
+      className="bg-white rounded-xl shadow-sm border border-gray-100 hover:border-blue-200 hover:shadow-md transition-all p-4 cursor-pointer"
+    >
+      <div className="flex gap-3">
+        <div className="shrink-0 w-8 text-center">
+          <span className="text-xl font-bold text-gray-300">
+            {RANK_ICON(item.rank)}
+          </span>
+        </div>
+        {item.image_url && (
+          <img
+            src={item.image_url}
+            alt={item.raw_name}
+            className="w-16 h-16 object-contain rounded-lg border border-gray-100 shrink-0"
+            loading="lazy"
+          />
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className={'text-xs font-medium px-2 py-0.5 rounded-full ' + MALL_COLOR[item.mall]}>
+              {MALL_LABEL[item.mall]}
+            </span>
+          </div>
+          <p className="text-sm font-medium text-gray-800 line-clamp-2 mb-2">
+            {item.raw_name}
+          </p>
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <p className="text-xs text-gray-400">販売価格</p>
+              <p className="text-lg font-bold text-blue-600">{formatPrice(item.price)}</p>
+            </div>
+            {item.shipping_fee > 0 && (
+              <p className="text-xs text-gray-400 mb-1">+送料 {formatPrice(item.shipping_fee)}</p>
+            )}
+            {item.shipping_fee === 0 && (
+              <span className="text-xs text-green-600 font-medium mb-1">送料無料</span>
+            )}
+            {item.point > 0 && (
+              <p className="text-xs text-orange-500 mb-1">P{item.point}還元</p>
+            )}
+            <div className="ml-auto text-right">
+              <p className="text-xs text-gray-400">実質合計</p>
+              <p className="text-base font-bold text-green-600">{formatPrice(item.effective_total)}</p>
+            </div>
+          </div>
+          {item.total_units > 0 && (
+            <p className="text-xs text-gray-400 mt-1">
+              単価: {up.integer}.{up.decimal}円 / {item.total_units}個
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [state, setState] = useState<AppState>({
     query: '',
@@ -81,20 +153,20 @@ function App() {
     abortControllerRef.current = new AbortController();
     setState(prev => ({ ...prev, isLoading: true, error: null, items: [], geminiResult: null, query: q }));
     try {
-      const response = await fetch(`${API_BASE}/api/search`, {
+      const response = await fetch(API_BASE + '/api/search', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
         body: JSON.stringify({ query: q }),
         signal: abortControllerRef.current.signal,
       });
       if (response.status === 401) { handleTokenExpired(); return; }
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error((errorData as any).error || `サーバーエラー: ${response.status}`);
+        throw new Error((errorData as any).error || 'サーバーエラー: ' + response.status);
       }
       const data = await response.json();
       const rawItems: AffiliateItem[] = (data.items || data.results || []).map(
-        (item: AffiliateItem, i: number) => ({ ...item, id: `${i}` })
+        (item: AffiliateItem, i: number) => ({ ...item, id: String(i) })
       );
       setState(prev => ({ ...prev, items: rawItems, isLoading: false }));
       if (q) runGeminiAnalysis(q, token);
@@ -171,18 +243,18 @@ function App() {
             ) : geminiResult && geminiResult.success ? (
               <div className="flex flex-wrap gap-3 text-sm text-gray-700">
                 {geminiResult.brand && (
-                  <span>🏷️ <span className="font-medium">ブランド:</span> {geminiResult.brand}</span>
+                  <span>🏷️ ブランド: {geminiResult.brand}</span>
                 )}
                 {geminiResult.modelNumber && (
-                  <span>🔢 <span className="font-medium">型番:</span> {geminiResult.modelNumber}</span>
+                  <span>🔢 型番: {geminiResult.modelNumber}</span>
                 )}
                 {geminiResult.capacity && (
-                  <span>📦 <span className="font-medium">容量:</span> {geminiResult.capacity}</span>
+                  <span>📦 容量: {geminiResult.capacity}</span>
                 )}
               </div>
             ) : (
               <p className="text-gray-400 text-sm">
-                解析結果なし ({geminiResult ? geminiResult.error : ''})
+                解析結果なし
               </p>
             )}
           </div>
@@ -192,69 +264,9 @@ function App() {
           <div>
             <p className="text-sm text-gray-500 mb-3">「{query}」 — {items.length}件</p>
             <div className="space-y-3">
-              {items.map((item) => {
-                const up = parseUnitPrice(item.unit_price);
-                const itemKey = item.id !== undefined ? item.id : String(item.rank);
-                return (
-                  
-                    key={itemKey}
-                    href={item.affiliate_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="block bg-white rounded-xl shadow-sm border border-gray-100 hover:border-blue-200 hover:shadow-md transition-all p-4"
-                  >
-                    <div className="flex gap-3">
-                      <div className="shrink-0 w-8 text-center">
-                        <span className="text-xl font-bold text-gray-300">
-                          {item.rank === 1 ? '🥇' : item.rank === 2 ? '🥈' : item.rank === 3 ? '🥉' : item.rank}
-                        </span>
-                      </div>
-                      {item.image_url && (
-                        <img
-                          src={item.image_url}
-                          alt={item.raw_name}
-                          className="w-16 h-16 object-contain rounded-lg border border-gray-100 shrink-0"
-                          loading="lazy"
-                        />
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${MALL_COLOR[item.mall]}`}>
-                            {MALL_LABEL[item.mall]}
-                          </span>
-                        </div>
-                        <p className="text-sm font-medium text-gray-800 line-clamp-2 mb-2">
-                          {item.raw_name}
-                        </p>
-                        <div className="flex flex-wrap items-end gap-3">
-                          <div>
-                            <p className="text-xs text-gray-400">販売価格</p>
-                            <p className="text-lg font-bold text-blue-600">{formatPrice(item.price)}</p>
-                          </div>
-                          {item.shipping_fee > 0 && (
-                            <p className="text-xs text-gray-400 mb-1">+送料 {formatPrice(item.shipping_fee)}</p>
-                          )}
-                          {item.shipping_fee === 0 && (
-                            <span className="text-xs text-green-600 font-medium mb-1">送料無料</span>
-                          )}
-                          {item.point > 0 && (
-                            <p className="text-xs text-orange-500 mb-1">P{item.point}還元</p>
-                          )}
-                          <div className="ml-auto text-right">
-                            <p className="text-xs text-gray-400">実質合計</p>
-                            <p className="text-base font-bold text-green-600">{formatPrice(item.effective_total)}</p>
-                          </div>
-                        </div>
-                        {item.total_units > 0 && (
-                          <p className="text-xs text-gray-400 mt-1">
-                            単価: {up.integer}.{up.decimal}円 / {item.total_units}個
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </a>
-                );
-              })}
+              {items.map((item) => (
+                <ItemCard key={item.id} item={item} />
+              ))}
             </div>
           </div>
         )}
