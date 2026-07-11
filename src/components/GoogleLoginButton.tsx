@@ -3,12 +3,12 @@ import { useEffect, useRef, useState } from 'react';
 const CLIENT_ID = '826846133648-7rg02uiu9v3n05v97055ljm2j7cg6j1h.apps.googleusercontent.com';
 
 interface Props {
-  onLogin: (accessToken: string) => void;
-  onLogout: () => void;
+  onSuccess: (accessToken: string) => void;
+  onExpired: () => void;
+  isLoggedIn: boolean;
 }
 
-export function GoogleLoginButton({ onLogin, onLogout }: Props) {
-  const [loggedIn, setLoggedIn] = useState(false);
+export default function GoogleLoginButton({ onSuccess, onExpired, isLoggedIn }: Props) {
   const clientRef = useRef<any>(null);
 
   useEffect(() => {
@@ -20,8 +20,9 @@ export function GoogleLoginButton({ onLogin, onLogout }: Props) {
           scope: 'https://www.googleapis.com/auth/generative-language.retriever',
           callback: (tokenResponse: any) => {
             if (tokenResponse.access_token) {
-              onLogin(tokenResponse.access_token);
-              setLoggedIn(true);
+              onSuccess(tokenResponse.access_token);
+            } else {
+              onExpired();
             }
           },
         });
@@ -31,9 +32,9 @@ export function GoogleLoginButton({ onLogin, onLogout }: Props) {
   }, []);
 
   const handleLogin = () => clientRef.current?.requestAccessToken();
-  const handleLogout = () => { setLoggedIn(false); onLogout(); };
+  const handleLogout = () => { onExpired(); };
 
-  return loggedIn ? (
+  return isLoggedIn ? (
     <button onClick={handleLogout} className="text-xs px-3 py-1 rounded-md bg-green-600 text-white shrink-0">
       ✓ Google連携中
     </button>
