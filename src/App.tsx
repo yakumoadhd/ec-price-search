@@ -42,7 +42,7 @@ const MALL_COLOR: Record<AffiliateItem['mall'], string> = {
 };
 
 // ===== メインコンポーネント =====
-export default function App() {
+function App() { 
   const [state, setState] = useState<AppState>({
     query: '',
     items: [],
@@ -366,4 +366,4 @@ export default function App() {
       </main>
     </div>
   );
-}
+}export default App;
