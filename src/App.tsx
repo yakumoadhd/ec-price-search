@@ -1,46 +1,55 @@
 // src/App.tsx
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { SearchResult, RankingItem, GeminiAnalysis } from './types';
-import { analyzeProductNameWithGemini } from './geminiService';
+import { AffiliateItem, parseUnitPrice } from './types';
+import { analyzeProductNameWithGemini, GeminiAnalyzeResponse } from './geminiService';
 import GoogleLoginButton from './components/GoogleLoginButton';
-
-// ===== 型定義 =====
-interface SearchState {
-  query: string;
-  results: SearchResult[];
-  ranking: RankingItem[];
-  isLoading: boolean;
-  error: string | null;
-  geminiAnalysis: GeminiAnalysis | null;
-  isGeminiLoading: boolean;
-  geminiError: string | null;
-}
 
 // ===== 定数 =====
 const API_BASE = '';
 const MAX_RETRIES = 2;
 
 // ===== ユーティリティ =====
-const formatPrice = (price: number): string => {
-  return new Intl.NumberFormat('ja-JP', {
-    style: 'currency',
-    currency: 'JPY',
-  }).format(price);
-};
+const formatPrice = (price: number): string =>
+  new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY' }).format(price);
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+// ===== 状態型 =====
+interface AppState {
+  query: string;
+  items: AffiliateItem[];
+  isLoading: boolean;
+  error: string | null;
+  geminiResult: GeminiAnalyzeResponse | null;
+  isGeminiLoading: boolean;
+}
+
+// ===== モール表示名 =====
+const MALL_LABEL: Record<AffiliateItem['mall'], string> = {
+  amazon: 'Amazon',
+  rakuten: '楽天',
+  yahoo: 'Yahoo!',
+  yodobashi: 'ヨドバシ',
+  other: 'その他',
+};
+
+const MALL_COLOR: Record<AffiliateItem['mall'], string> = {
+  amazon: 'bg-orange-100 text-orange-700',
+  rakuten: 'bg-red-100 text-red-700',
+  yahoo: 'bg-purple-100 text-purple-700',
+  yodobashi: 'bg-yellow-100 text-yellow-700',
+  other: 'bg-gray-100 text-gray-600',
+};
+
 // ===== メインコンポーネント =====
 export default function App() {
-  const [state, setState] = useState<SearchState>({
+  const [state, setState] = useState<AppState>({
     query: '',
-    results: [],
-    ranking: [],
+    items: [],
     isLoading: false,
     error: null,
-    geminiAnalysis: null,
+    geminiResult: null,
     isGeminiLoading: false,
-    geminiError: null,
   });
 
   const [inputValue, setInputValue] = useState('');
@@ -58,16 +67,32 @@ export default function App() {
     }));
   }, []);
 
-  // Googleログイン成功時
+  // Googleログイン成功
   const handleLoginSuccess = useCallback((accessToken: string) => {
     setToken(accessToken);
     setIsLoggedIn(true);
     setState(prev => ({ ...prev, error: null }));
   }, []);
 
+  // Gemini分析（検索後に非同期実行）
+  const runGeminiAnalysis = useCallback(async (
+    query: string,
+    accessToken: string
+  ) => {
+    setState(prev => ({ ...prev, isGeminiLoading: true }));
+    const result = await analyzeProductNameWithGemini(query, accessToken, handleTokenExpired);
+    setState(prev => ({
+      ...prev,
+      geminiResult: result,
+      isGeminiLoading: false,
+    }));
+  }, [handleTokenExpired]);
+
   // 検索実行
   const handleSearch = useCallback(async (retryCount = 0) => {
-    if (!inputValue.trim()) return;
+    const q = inputValue.trim();
+    if (!q) return;
+
     if (!isLoggedIn || !token) {
       setState(prev => ({
         ...prev,
@@ -76,7 +101,6 @@ export default function App() {
       return;
     }
 
-    // 前のリクエストをキャンセル
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
     }
@@ -86,11 +110,9 @@ export default function App() {
       ...prev,
       isLoading: true,
       error: null,
-      results: [],
-      ranking: [],
-      geminiAnalysis: null,
-      geminiError: null,
-      query: inputValue.trim(),
+      items: [],
+      geminiResult: null,
+      query: q,
     }));
 
     try {
@@ -100,7 +122,7 @@ export default function App() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`,
         },
-        body: JSON.stringify({ query: inputValue.trim() }),
+        body: JSON.stringify({ query: q }),
         signal: abortControllerRef.current.signal,
       });
 
@@ -115,16 +137,19 @@ export default function App() {
       }
 
       const data = await response.json();
+      const rawItems: AffiliateItem[] = (data.items || data.results || []).map(
+        (item: AffiliateItem, i: number) => ({ ...item, id: `${i}` })
+      );
+
       setState(prev => ({
         ...prev,
-        results: data.results || [],
-        ranking: data.ranking || [],
+        items: rawItems,
         isLoading: false,
       }));
 
-      // Gemini分析を非同期で実行
-      if (data.results && data.results.length > 0) {
-        runGeminiAnalysis(inputValue.trim(), data.results, token);
+      // Gemini分析を並走
+      if (q) {
+        runGeminiAnalysis(q, token);
       }
     } catch (err: any) {
       if (err.name === 'AbortError') return;
@@ -140,54 +165,25 @@ export default function App() {
         error: err.message || '検索中にエラーが発生しました。',
       }));
     }
-  }, [inputValue, isLoggedIn, token, handleTokenExpired]);
+  }, [inputValue, isLoggedIn, token, handleTokenExpired, runGeminiAnalysis]);
 
-  // Gemini分析
-  const runGeminiAnalysis = useCallback(async (
-    query: string,
-    results: SearchResult[],
-    accessToken: string
-  ) => {
-    setState(prev => ({ ...prev, isGeminiLoading: true, geminiError: null }));
-    try {
-      const analysis = await analyzeProductNameWithGemini(query, results, accessToken);
-      setState(prev => ({
-        ...prev,
-        geminiAnalysis: analysis,
-        isGeminiLoading: false,
-      }));
-    } catch (err: any) {
-      if (err.message?.includes('401') || err.message?.includes('expired')) {
-        handleTokenExpired();
-        return;
-      }
-      setState(prev => ({
-        ...prev,
-        geminiError: err.message || 'Gemini分析中にエラーが発生しました。',
-        isGeminiLoading: false,
-      }));
-    }
-  }, [handleTokenExpired]);
-
-  // Enterキー対応
+  // Enterキー
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter') handleSearch();
   }, [handleSearch]);
 
   // クリーンアップ
   useEffect(() => {
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
+    return () => { abortControllerRef.current?.abort(); };
   }, []);
+
+  const { query, items, isLoading, error, geminiResult, isGeminiLoading } = state;
 
   return (
     <div className="min-h-screen bg-gray-50">
       {/* ヘッダー */}
       <header className="bg-white shadow-sm sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center justify-between">
           <h1 className="text-xl font-bold text-gray-800">🛒 EC価格比較</h1>
           <GoogleLoginButton
             onSuccess={handleLoginSuccess}
@@ -197,8 +193,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* メインコンテンツ */}
-      <main className="max-w-4xl mx-auto px-4 py-6">
+      <main className="max-w-3xl mx-auto px-4 py-6">
         {/* 検索バー */}
         <div className="flex gap-2 mb-6">
           <input
@@ -206,164 +201,163 @@ export default function App() {
             value={inputValue}
             onChange={e => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="商品名を入力してください..."
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            disabled={state.isLoading}
+            placeholder="商品名を入力..."
+            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-base"
+            disabled={isLoading}
           />
           <button
             onClick={() => handleSearch()}
-            disabled={state.isLoading || !inputValue.trim()}
-            className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
+            disabled={isLoading || !inputValue.trim()}
+            className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium"
           >
-            {state.isLoading ? '検索中...' : '検索'}
+            {isLoading ? '検索中…' : '検索'}
           </button>
         </div>
 
-        {/* エラー表示 */}
-        {state.error && (
-          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
-            ⚠️ {state.error}
+        {/* エラー */}
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+            ⚠️ {error}
           </div>
         )}
 
         {/* ローディング */}
-        {state.isLoading && (
-          <div className="text-center py-12">
-            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-4"></div>
-            <p className="text-gray-500">検索中...</p>
+        {isLoading && (
+          <div className="text-center py-16">
+            <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-3" />
+            <p className="text-gray-400">検索中...</p>
           </div>
         )}
 
         {/* Gemini分析結果 */}
-        {(state.geminiAnalysis || state.isGeminiLoading) && (
-          <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-lg">
-            <h2 className="text-lg font-semibold text-purple-800 mb-2">
-              🤖 Gemini AI 分析
-            </h2>
-            {state.isGeminiLoading ? (
-              <p className="text-purple-600 animate-pulse">分析中...</p>
-            ) : state.geminiAnalysis ? (
-              <div className="space-y-2">
-                {state.geminiAnalysis.normalizedName && (
-                  <p className="text-gray-700">
-                    <span className="font-medium">正規化名:</span>{' '}
-                    {state.geminiAnalysis.normalizedName}
-                  </p>
+        {(isGeminiLoading || geminiResult) && (
+          <div className="mb-5 p-4 bg-purple-50 border border-purple-200 rounded-lg">
+            <p className="text-sm font-semibold text-purple-700 mb-1">🤖 Gemini 商品名解析</p>
+            {isGeminiLoading ? (
+              <p className="text-purple-500 text-sm animate-pulse">解析中...</p>
+            ) : geminiResult?.success ? (
+              <div className="flex flex-wrap gap-3 text-sm text-gray-700">
+                {geminiResult.brand && (
+                  <span>🏷️ <span className="font-medium">ブランド:</span> {geminiResult.brand}</span>
                 )}
-                {state.geminiAnalysis.summary && (
-                  <p className="text-gray-700">
-                    <span className="font-medium">まとめ:</span>{' '}
-                    {state.geminiAnalysis.summary}
-                  </p>
+                {geminiResult.modelNumber && (
+                  <span>🔢 <span className="font-medium">型番:</span> {geminiResult.modelNumber}</span>
                 )}
-                {state.geminiAnalysis.recommendation && (
-                  <p className="text-green-700">
-                    <span className="font-medium">💡 おすすめ:</span>{' '}
-                    {state.geminiAnalysis.recommendation}
-                  </p>
+                {geminiResult.capacity && (
+                  <span>📦 <span className="font-medium">容量:</span> {geminiResult.capacity}</span>
                 )}
               </div>
-            ) : null}
-            {state.geminiError && (
-              <p className="text-red-600 text-sm">⚠️ {state.geminiError}</p>
+            ) : (
+              <p className="text-gray-400 text-sm">解析結果なし ({geminiResult?.error})</p>
             )}
           </div>
         )}
 
-        {/* ランキング */}
-        {state.ranking.length > 0 && (
-          <div className="mb-6">
-            <h2 className="text-lg font-semibold text-gray-700 mb-3">
-              📊 価格ランキング
-            </h2>
-            <div className="space-y-2">
-              {state.ranking.map((item, index) => (
-                <div
-                  key={index}
-                  className="flex items-center gap-3 p-3 bg-white rounded-lg shadow-sm border border-gray-100"
-                >
-                  <span className="text-2xl font-bold text-gray-400 w-8 text-center">
-                    {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}`}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-gray-800 truncate">{item.title}</p>
-                    <p className="text-sm text-gray-500">{item.store}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="font-bold text-blue-600">{formatPrice(item.price)}</p>
-                    {item.shipping !== undefined && (
-                      <p className="text-xs text-gray-400">
-                        {item.shipping === 0 ? '送料無料' : `+送料${formatPrice(item.shipping)}`}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* 検索結果一覧 */}
-        {state.results.length > 0 && (
+        {items.length > 0 && (
           <div>
-            <h2 className="text-lg font-semibold text-gray-700 mb-3">
-              🔍 検索結果 ({state.results.length}件)
-            </h2>
+            <p className="text-sm text-gray-500 mb-3">
+              「{query}」 — {items.length}件
+            </p>
             <div className="space-y-3">
-              {state.results.map((result, index) => (
-                <div
-                  key={index}
-                  className="p-4 bg-white rounded-lg shadow-sm border border-gray-100 hover:border-blue-200 transition-colors"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      
-                        href={result.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="font-medium text-blue-600 hover:underline line-clamp-2"
-                      >
-                        {result.title}
-                      </a>
-                      {result.description && (
-                        <p className="text-sm text-gray-500 mt-1 line-clamp-2">
-                          {result.description}
-                        </p>
+              {items.map((item) => {
+                const up = parseUnitPrice(item.unit_price);
+                return (
+                  
+                    key={item.id ?? item.rank}
+                    href={item.affiliate_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block bg-white rounded-xl shadow-sm border border-gray-100 hover:border-blue-200 hover:shadow-md transition-all p-4"
+                  >
+                    <div className="flex gap-3">
+                      {/* 順位 */}
+                      <div className="shrink-0 w-8 text-center">
+                        <span className="text-xl font-bold text-gray-300">
+                          {item.rank === 1 ? '🥇' : item.rank === 2 ? '🥈' : item.rank === 3 ? '🥉' : item.rank}
+                        </span>
+                      </div>
+
+                      {/* サムネ */}
+                      {item.image_url && (
+                        <img
+                          src={item.image_url}
+                          alt={item.raw_name}
+                          className="w-16 h-16 object-contain rounded-lg border border-gray-100 shrink-0"
+                          loading="lazy"
+                        />
                       )}
-                      <p className="text-xs text-gray-400 mt-1 truncate">{result.url}</p>
-                    </div>
-                    {result.price !== undefined && result.price !== null && (
-                      <div className="text-right shrink-0">
-                        <p className="font-bold text-blue-600 text-lg">
-                          {formatPrice(result.price)}
+
+                      {/* 情報 */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${MALL_COLOR[item.mall]}`}>
+                            {MALL_LABEL[item.mall]}
+                          </span>
+                        </div>
+                        <p className="text-sm font-medium text-gray-800 line-clamp-2 mb-2">
+                          {item.raw_name}
                         </p>
-                        {result.store && (
-                          <p className="text-xs text-gray-500">{result.store}</p>
+
+                        {/* 価格情報 */}
+                        <div className="flex flex-wrap items-end gap-3">
+                          <div>
+                            <p className="text-xs text-gray-400">販売価格</p>
+                            <p className="text-lg font-bold text-blue-600">
+                              {formatPrice(item.price)}
+                            </p>
+                          </div>
+                          {item.shipping_fee > 0 && (
+                            <p className="text-xs text-gray-400 mb-1">
+                              +送料 {formatPrice(item.shipping_fee)}
+                            </p>
+                          )}
+                          {item.shipping_fee === 0 && (
+                            <span className="text-xs text-green-600 font-medium mb-1">送料無料</span>
+                          )}
+                          {item.point > 0 && (
+                            <p className="text-xs text-orange-500 mb-1">
+                              P{item.point}還元
+                            </p>
+                          )}
+                          <div className="ml-auto text-right">
+                            <p className="text-xs text-gray-400">実質合計</p>
+                            <p className="text-base font-bold text-green-600">
+                              {formatPrice(item.effective_total)}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* 単価 */}
+                        {item.total_units > 0 && (
+                          <p className="text-xs text-gray-400 mt-1">
+                            単価: {up.integer}.{up.decimal}円 / {item.total_units}個
+                          </p>
                         )}
                       </div>
-                    )}
-                  </div>
-                </div>
-              ))}
+                    </div>
+                  </a>
+                );
+              })}
             </div>
           </div>
         )}
 
         {/* 結果なし */}
-        {!state.isLoading && state.query && state.results.length === 0 && !state.error && (
-          <div className="text-center py-12 text-gray-400">
+        {!isLoading && query && items.length === 0 && !error && (
+          <div className="text-center py-16 text-gray-400">
             <p className="text-4xl mb-3">🔍</p>
-            <p>「{state.query}」の検索結果が見つかりませんでした。</p>
+            <p>「{query}」の検索結果が見つかりませんでした。</p>
           </div>
         )}
 
         {/* 初期状態 */}
-        {!state.query && !state.isLoading && (
+        {!query && !isLoading && (
           <div className="text-center py-16 text-gray-400">
             <p className="text-5xl mb-4">🛒</p>
             <p className="text-lg">商品名を入力して価格を比較しよう！</p>
             {!isLoggedIn && (
-              <p className="text-sm mt-2 text-orange-500">
+              <p className="text-sm mt-2 text-orange-400">
                 ※ 検索にはGoogleログインが必要です
               </p>
             )}
