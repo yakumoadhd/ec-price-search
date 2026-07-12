@@ -110,87 +110,87 @@ async function startServer() {
   });
 
   // ──────────────────────────────────────────────
-// 楽天市場 商品検索エンドポイント
-// ──────────────────────────────────────────────
-app.post('/api/rakuten', async (req, res) => {
-  try {
-    const { query } = req.body;
-    if (!query) return res.status(400).json({ error: 'query required' });
+  // 楽天市場 商品検索エンドポイント
+  // ──────────────────────────────────────────────
+  app.post('/api/rakuten', async (req, res) => {
+    try {
+      const { query } = req.body;
+      if (!query) return res.status(400).json({ error: 'query required' });
 
-    const appId      = process.env.RAKUTEN_APPLICATION_ID;
-    const accessKey  = process.env.RAKUTEN_ACCESS_KEY;
-    const affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
-    if (!appId)     return res.status(500).json({ error: 'RAKUTEN_APPLICATION_ID not set' });
-    if (!accessKey) return res.status(500).json({ error: 'RAKUTEN_ACCESS_KEY not set' });
+      const appId      = process.env.RAKUTEN_APPLICATION_ID;
+      const accessKey  = process.env.RAKUTEN_ACCESS_KEY;
+      const affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
+      if (!appId)     return res.status(500).json({ error: 'RAKUTEN_APPLICATION_ID not set' });
+      if (!accessKey) return res.status(500).json({ error: 'RAKUTEN_ACCESS_KEY not set' });
 
-    const params = new URLSearchParams({
-      applicationId: appId,
-      accessKey:     accessKey,
-      keyword:       query,
-      hits:          '20',
-      sort:          'standard',
-      formatVersion: '2',
-      ...(affiliateId ? { affiliateId } : {}),
-    });
-
-    const response = await fetch(
-      `https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701?${params}`
-    );
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`Rakuten API error: ${response.status} ${errText}`);
-    }
-
-    const data = await response.json();
-    // 楽天API（新旧共通）は Items（大文字I）で返す
-    const rawItems: any[] = data.Items || data.items || [];
-    const items = rawItems
-      .filter((item: any) => item.itemCode && item.itemName && item.itemPrice > 0)
-      .map((item: any) => {
-        const price     = parseInt(item.itemPrice, 10) || 0;
-        const pointRate = parseInt(item.pointRate,  10) || 1;
-        const point     = Math.floor(price * pointRate / 100);
-
-        // アフィリエイトURL: affiliateUrl優先、なければitemUrl
-        const affiliateUrl: string =
-          item.affiliateUrl ||
-          item.itemUrl ||
-          `https://item.rakuten.co.jp/${item.itemCode}/`;
-
-        // 画像URL: mediumImageUrls は [{imageUrl: "..."}, ...] 形式
-        let imageUrl = '';
-        const imgs = item.mediumImageUrls;
-        if (Array.isArray(imgs) && imgs.length > 0) {
-          const first = imgs[0];
-          imageUrl = (typeof first === 'string') ? first : (first?.imageUrl || '');
-        }
-
-        return {
-          id:              `rakuten_${item.itemCode}`,
-          mall:            'rakuten' as const,
-          raw_name:        item.itemName,
-          price,
-          point,
-          shipping_fee:    0,
-          coupon_discount: 0,
-          effective_total: price - point,
-          affiliate_url:   affiliateUrl,
-          image_url:       imageUrl,
-          seller_name:     item.shopName || '',
-          review_score:    parseFloat(item.reviewAverage) || 0,
-          review_count:    parseInt(item.reviewCount, 10) || 0,
-          capacity:        null,
-          unit_price:      price,
-          total_units:     1,
-          rank:            0,
-        };
+      const params = new URLSearchParams({
+        applicationId: appId,
+        accessKey:     accessKey,
+        keyword:       query,
+        hits:          '20',
+        sort:          'standard',
+        formatVersion: '2',
+        ...(affiliateId ? { affiliateId } : {}),
       });
 
-    res.json({ items });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
-  }
-});
+      const response = await fetch(
+        `https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701?${params}`
+      );
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Rakuten API error: ${response.status} ${errText}`);
+      }
+
+      const data = await response.json();
+      // ✅ 修正: 楽天APIは Items（大文字I）で返す
+      const rawItems: any[] = data.Items || data.items || [];
+      const items = rawItems
+        .filter((item: any) => item.itemCode && item.itemName && item.itemPrice > 0)
+        .map((item: any) => {
+          const price     = parseInt(item.itemPrice, 10) || 0;
+          const pointRate = parseInt(item.pointRate, 10) || 1;
+          const point     = Math.floor(price * pointRate / 100);
+
+          // アフィリエイトURL: affiliateUrl優先、なければitemUrl
+          const affiliateUrl: string =
+            item.affiliateUrl ||
+            item.itemUrl ||
+            `https://item.rakuten.co.jp/${item.itemCode}/`;
+
+          // 画像URL: mediumImageUrls は [{imageUrl: "..."}, ...] 形式
+          let imageUrl = '';
+          const imgs = item.mediumImageUrls;
+          if (Array.isArray(imgs) && imgs.length > 0) {
+            const first = imgs[0];
+            imageUrl = (typeof first === 'string') ? first : (first?.imageUrl || '');
+          }
+
+          return {
+            id:              `rakuten_${item.itemCode}`,
+            mall:            'rakuten' as const,
+            raw_name:        item.itemName,
+            price,
+            point,
+            shipping_fee:    0,
+            coupon_discount: 0,
+            effective_total: price - point,
+            affiliate_url:   affiliateUrl,
+            image_url:       imageUrl,
+            seller_name:     item.shopName || '',
+            review_score:    parseFloat(item.reviewAverage) || 0,
+            review_count:    parseInt(item.reviewCount, 10) || 0,
+            capacity:        null,
+            unit_price:      price,
+            total_units:     1,
+            rank:            0,
+          };
+        });
+
+      res.json({ items });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   // ──────────────────────────────────────────────
   // Amazon スクレイパー中継エンドポイント
