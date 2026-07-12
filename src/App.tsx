@@ -1,287 +1,366 @@
-import express from 'express';
-import path from 'path';
-import { createServer as createViteServer } from 'vite';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { AffiliateItem } from './types';
+import { ResultCard } from './components/ResultCard';
+import { SearchInput } from './components/SearchInput';
+import { FavoritesList } from './components/FavoritesList';
+import { DropdownFilter } from './components/DropdownFilter';
+import { DisclaimerModal } from './components/DisclaimerModal';
+import { SettingsPage } from './components/SettingsPage';
+import GoogleLoginButton from './components/GoogleLoginButton';
+import { PointSettings, loadSettings } from './pointSettings';
+import { fetchSearXNG, SearXNGAllDownError } from './utils/searxngClient';
+import { mergeSearXNGResults } from './utils/searxngMerger';
+import { ArrowUpDown, Settings, Heart, Info } from 'lucide-react';
 
-// ══════════════════════════════════════════════════════
-// 商品名から「規格」と「入数」を正規表現で確実に抽出する
-// Gemini不使用・即時処理・全商品種別対応
-// ══════════════════════════════════════════════════════
-function extractCapacityLabel(rawName: string): { label: string; totalUnits: number } {
-  const name = rawName;
+type SortMode = 'effective' | 'unit';
+type AppView = 'main' | 'favorites' | 'settings';
 
-  let specStr: string | null = null;
+export default function App() {
+  const [query, setQuery] = useState('');
+  const [items, setItems] = useState<AffiliateItem[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>('effective');
+  const [capacityFilter, setCapacityFilter] = useState<string | null>(null);
+  const [capacityOptions, setCapacityOptions] = useState<string[]>([]);
+  const [favorites, setFavorites] = useState<AffiliateItem[]>([]);
+  const [searchHistory, setSearchHistory] = useState<string[]>([]);
+  const [view, setView] = useState<AppView>('main');
+  const [isDisclaimerOpen, setIsDisclaimerOpen] = useState(false);
+  const [settings, setSettings] = useState<PointSettings>(loadSettings());
+  const [isGoogleLoggedIn, setIsGoogleLoggedIn] = useState(false);
+  const accessTokenRef = useRef<string | null>(null);
 
-  const mlMatch = name.match(/(\d+(?:\.\d+)?)\s*[mM][lL]/);
-  if (mlMatch) specStr = `${parseFloat(mlMatch[1])}ml`;
-
-  if (!specStr) {
-    const lMatch = name.match(/(\d+(?:\.\d+)?)\s*[Ll](?!\w)/);
-    if (lMatch) specStr = `${lMatch[1]}L`;
-  }
-
-  if (!specStr) {
-    const kgMatch = name.match(/(\d+(?:\.\d+)?)\s*kg/i);
-    if (kgMatch) specStr = `${kgMatch[1]}kg`;
-  }
-
-  if (!specStr) {
-    const gMatch = name.match(/(\d+(?:\.\d+)?)\s*g(?!\w)/);
-    if (gMatch) specStr = `${gMatch[1]}g`;
-  }
-
-  const COUNT_UNITS = '本|缶|個|袋|箱|冊|食|パック|セット';
-  let totalUnits: number | null = null;
-
-  const countMatches = [...name.matchAll(new RegExp(`(\\d+)\\s*(${COUNT_UNITS})`, 'g'))];
-  if (countMatches.length > 0) {
-    const counts = countMatches.map(m => parseInt(m[1], 10));
-    totalUnits = Math.max(...counts);
-  }
-
-  const perCaseMatch = name.match(
-    new RegExp(`(\\d+)\\s*(?:${COUNT_UNITS})[^\\d]*[×xX*]\\s*(\\d+)\\s*ケース`)
-  );
-  if (perCaseMatch) {
-    const calc = parseInt(perCaseMatch[1], 10) * parseInt(perCaseMatch[2], 10);
-    if (!totalUnits || calc > totalUnits) totalUnits = calc;
-  }
-
-  if (!totalUnits) {
-    const caseOnlyMatch = name.match(/[×xX*]?\s*(\d+)\s*ケース/);
-    if (caseOnlyMatch) {
-      totalUnits = parseInt(caseOnlyMatch[1], 10) * 24;
-    }
-  }
-
-  if (!specStr) {
-    const specUnitMatch = name.match(/((\d+)\s*(枚|粒|錠|包|片))/);
-    if (specUnitMatch) {
-      specStr = `${specUnitMatch[2]}${specUnitMatch[3]}`;
-    }
-  }
-
-  if (!totalUnits || totalUnits <= 0) totalUnits = 1;
-
-  const unitsLabel = totalUnits === 1 ? '1個' : `${totalUnits}個`;
-
-  if (specStr) {
-    return { label: `${specStr} ${unitsLabel}`, totalUnits };
-  }
-  return { label: unitsLabel, totalUnits };
-}
-
-
-async function startServer() {
-  const app = express();
-  const PORT = parseInt(process.env.PORT || '8080', 10);
-
-  app.use(express.json());
-
-  // ──────────────────────────────────────────────
-  // 容量・入数ラベル抽出 API
-  // ──────────────────────────────────────────────
-  app.post('/api/gemini/capacities', async (req, res) => {
+  // LocalStorageからお気に入り・履歴を復元
+  useEffect(() => {
     try {
-      const items: { rawName: string; capacityMl: number | null }[] = req.body.items || [];
-      if (items.length === 0) return res.json({ labels: [] });
-      const labels = items.map(item => extractCapacityLabel(item.rawName).label);
-      res.json({ labels });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
+      const saved = localStorage.getItem('pr_favorites');
+      if (saved) setFavorites(JSON.parse(saved));
+      const hist = localStorage.getItem('pr_history');
+      if (hist) setSearchHistory(JSON.parse(hist));
+    } catch {}
+  }, []);
 
-  // ──────────────────────────────────────────────
-  // Yahoo 検索中継（ec-search-api経由）
-  // ──────────────────────────────────────────────
-  app.post('/api/search', async (req, res) => {
+  // お気に入りをLocalStorageに保存
+  useEffect(() => {
     try {
-      const response = await fetch('https://ec-search-api-826846133648.asia-northeast1.run.app/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ keyword: req.body.query || req.body.keyword }),
-      });
-      if (!response.ok) throw new Error(`API error: ${response.status}`);
-      const data = await response.json();
-      res.json(data);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
+      localStorage.setItem('pr_favorites', JSON.stringify(favorites));
+    } catch {}
+  }, [favorites]);
 
-  // ──────────────────────────────────────────────
-  // 楽天市場 商品検索エンドポイント
-  // ──────────────────────────────────────────────
-  app.post('/api/rakuten', async (req, res) => {
+  const handleGoogleSuccess = (token: string) => {
+    accessTokenRef.current = token;
+    setIsGoogleLoggedIn(true);
+  };
+
+  const handleGoogleExpired = () => {
+    accessTokenRef.current = null;
+    setIsGoogleLoggedIn(false);
+  };
+
+  const handleToggleFavorite = useCallback((item: AffiliateItem) => {
+    setFavorites(prev => {
+      const exists = prev.some(f => f.id === item.id);
+      if (exists) return prev.filter(f => f.id !== item.id);
+      return [...prev, { ...item }];
+    });
+  }, []);
+
+  const handleSearch = useCallback(async (overrideQuery?: string) => {
+    const searchQuery = (overrideQuery ?? query).trim();
+    if (!searchQuery) return;
+
+    setIsLoading(true);
+    setError(null);
+    setItems([]);
+    setCapacityFilter(null);
+    setCapacityOptions([]);
+
+    // 検索履歴を更新
+    setSearchHistory(prev => {
+      const updated = [searchQuery, ...prev.filter(h => h !== searchQuery)].slice(0, 10);
+      try { localStorage.setItem('pr_history', JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+
     try {
-      const { query } = req.body;
-      if (!query) return res.status(400).json({ error: 'query required' });
+      // ── 3並列検索: Yahoo / 楽天 / Amazon ──────────────
+      const [yahooResult, rakutenResult, amazonResult] = await Promise.allSettled([
+        fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: searchQuery }),
+        }).then(r => r.json()),
+        fetch('/api/rakuten', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: searchQuery }),
+        }).then(r => r.json()),
+        fetch('/api/amazon', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: searchQuery }),
+        }).then(r => r.json()),
+      ]);
 
-      const appId       = process.env.RAKUTEN_APPLICATION_ID;
-      const accessKey   = process.env.RAKUTEN_ACCESS_KEY;
-      const affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
-      if (!appId)     return res.status(500).json({ error: 'RAKUTEN_APPLICATION_ID not set' });
-      if (!accessKey) return res.status(500).json({ error: 'RAKUTEN_ACCESS_KEY not set' });
+      let allItems: AffiliateItem[] = [];
 
-      const params = new URLSearchParams({
-        applicationId: appId,
-        accessKey:     accessKey,
-        keyword:       query,
-        hits:          '20',
-        sort:          'standard',
-        formatVersion: '2',
-        ...(affiliateId ? { affiliateId } : {}),
-      });
-
-      const response = await fetch(
-        `https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701?${params}`
-      );
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`Rakuten API error: ${response.status} ${errText}`);
+      if (yahooResult.status === 'fulfilled' && yahooResult.value?.items) {
+        allItems = [...allItems, ...yahooResult.value.items];
+      }
+      if (rakutenResult.status === 'fulfilled' && rakutenResult.value?.items) {
+        allItems = [...allItems, ...rakutenResult.value.items];
+      }
+      if (amazonResult.status === 'fulfilled' && amazonResult.value?.items) {
+        allItems = [...allItems, ...amazonResult.value.items];
       }
 
-      const data = await response.json();
-      const rawItems: any[] = data.Items || data.items || [];
-      const items = rawItems
-        .filter((item: any) => item.itemCode && item.itemName && item.itemPrice > 0)
-        .map((item: any) => {
-          const price     = parseInt(item.itemPrice, 10) || 0;
-          const pointRate = parseInt(item.pointRate, 10) || 1;
-          const point     = Math.floor(price * pointRate / 100);
+      // IDが未設定の商品にIDを付与
+      allItems = allItems.map((item, i) => ({
+        ...item,
+        id: item.id || `${item.mall}_${i}_${Date.now()}`,
+      }));
 
-          const affiliateUrl: string =
-            item.affiliateUrl ||
-            item.itemUrl ||
-            `https://item.rakuten.co.jp/${item.itemCode}/`;
-
-          let imageUrl = '';
-          const imgs = item.mediumImageUrls;
-          if (Array.isArray(imgs) && imgs.length > 0) {
-            const first = imgs[0];
-            imageUrl = (typeof first === 'string') ? first : (first?.imageUrl || '');
-          }
-
-          return {
-            id:              `rakuten_${item.itemCode}`,
-            mall:            'rakuten' as const,
-            raw_name:        item.itemName,
-            price,
-            point,
-            shipping_fee:    0,
-            coupon_discount: 0,
-            effective_total: price - point,
-            affiliate_url:   affiliateUrl,
-            image_url:       imageUrl,
-            seller_name:     item.shopName || '',
-            review_score:    parseFloat(item.reviewAverage) || 0,
-            review_count:    parseInt(item.reviewCount, 10) || 0,
-            capacity:        null,
-            unit_price:      price,
-            total_units:     1,
-            rank:            0,
-          };
-        });
-
-      res.json({ items });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
-    }
-  });
-
-  // ──────────────────────────────────────────────
-  // Amazon検索エンドポイント
-  // SearXNG(Oracle:8080) → ASIN抽出 → scrape(Oracle:8081)
-  // ──────────────────────────────────────────────
-  app.post('/api/amazon', async (req, res) => {
-    try {
-      const { query } = req.body;
-      if (!query) return res.status(400).json({ error: 'query required' });
-
-      const SEARXNG = 'http://161.33.140.166:8080';
-      const SCRAPER = 'http://161.33.140.166:8081';
-
-      // ① SearXNGでAmazon商品URL検索
-      const searxUrl = `${SEARXNG}/search?q=${encodeURIComponent(query + ' amazon.co.jp')}&format=json&engines=brave,yahoo`;
-      const searxRes = await fetch(searxUrl, { signal: AbortSignal.timeout(10000) });
-      if (!searxRes.ok) throw new Error(`SearXNG error: ${searxRes.status}`);
-      const searxData = await searxRes.json();
-
-      // ② URLからASIN抽出（重複除去・上位5件）
-      const asinSet = new Set<string>();
-      const asinRegex = /\/dp\/([A-Z0-9]{10})/;
-      for (const result of searxData.results || []) {
-        const match = asinRegex.exec(result.url || '');
-        if (match) asinSet.add(match[1]);
-        if (asinSet.size >= 5) break;
-      }
-
-      if (asinSet.size === 0) return res.json({ items: [] });
-
-      // ③ ASINをOracle scraperに並列投げ
-      const scrapeResults = await Promise.allSettled(
-        [...asinSet].map(asin =>
-          fetch(`${SCRAPER}/scrape`, {
+      // ── 容量ラベル取得 (/api/gemini/capacities) ──────
+      if (allItems.length > 0) {
+        try {
+          const capRes = await fetch('/api/gemini/capacities', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ asin }),
-            signal: AbortSignal.timeout(10000),
-          }).then(r => r.json())
-        )
-      );
+            body: JSON.stringify({
+              items: allItems.map(it => ({ rawName: it.raw_name, capacityMl: null })),
+            }),
+          });
+          if (capRes.ok) {
+            const capData = await capRes.json();
+            if (capData.labels?.length === allItems.length) {
+              allItems = allItems.map((item, i) => ({
+                ...item,
+                capacity: capData.labels[i] || undefined,
+              }));
+              const opts = [...new Set<string>(
+                capData.labels.filter((l: string) => l && l !== '1個')
+              )].sort();
+              setCapacityOptions(opts);
+            }
+          }
+        } catch {
+          // 容量ラベルはnon-fatal
+        }
+      }
 
-      // ④ 結果をAffiliateItem形式に変換
-      const items = scrapeResults
-        .filter(r => r.status === 'fulfilled' && (r as any).value?.price > 0)
-        .map((r: any) => {
-          const d = r.value;
-          return {
-            id:              `amazon_${d.asin}`,
-            mall:            'amazon' as const,
-            raw_name:        d.title || '',
-            price:           d.price || 0,
-            point:           0,
-            shipping_fee:    0,
-            coupon_discount: 0,
-            effective_total: d.price || 0,
-            affiliate_url:   d.affiliateUrl || `https://www.amazon.co.jp/dp/${d.asin}`,
-            image_url:       d.imageUrl || '',
-            seller_name:     'Amazon',
-            review_score:    0,
-            review_count:    0,
-            capacity:        null,
-            unit_price:      d.price || 0,
-            total_units:     1,
-            rank:            0,
-          };
-        });
+      // ── SearXNG マージ (Step 2-6) ─────────────────────
+      try {
+        const searxResult = await fetchSearXNG(searchQuery);
+        const merged = mergeSearXNGResults(searxResult.data.results, allItems);
+        allItems = [...allItems, ...merged.addedItems];
+      } catch (e) {
+        // SearXNG障害はnon-fatal
+        if (!(e instanceof SearXNGAllDownError)) {
+          console.warn('[SearXNG]', e);
+        }
+      }
 
-      res.json({ items });
+      // ── effective_totalでソート → rankを付与 ─────────
+      allItems.sort((a, b) => a.effective_total - b.effective_total);
+      allItems = allItems.map((item, i) => ({ ...item, rank: i + 1 }));
+
+      setItems(allItems);
+
+      if (allItems.length === 0) {
+        setError('商品が見つかりませんでした');
+      }
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      setError(e.message || '検索に失敗しました');
+    } finally {
+      setIsLoading(false);
     }
+  }, [query]);
+
+  // ── ソート済み・フィルター済みリスト ────────────────
+  const sortedItems = [...items].sort((a, b) => {
+    if (sortMode === 'unit') {
+      const ua = typeof a.unit_price === 'number' ? a.unit_price : a.effective_total;
+      const ub = typeof b.unit_price === 'number' ? b.unit_price : b.effective_total;
+      return ua - ub;
+    }
+    return a.effective_total - b.effective_total;
   });
 
-  // ──────────────────────────────────────────────
-  // Vite（開発）/ 静的ファイル配信（本番）
-  // ──────────────────────────────────────────────
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+  const filteredItems = capacityFilter
+    ? sortedItems.filter(item => item.capacity === capacityFilter)
+    : sortedItems;
+
+  const favoriteNames = favorites.map(f => f.raw_name);
+
+  // ── お気に入りページ ─────────────────────────────────
+  if (view === 'favorites') {
+    return (
+      <>
+        <FavoritesList
+          favorites={favorites}
+          onToggleFavorite={handleToggleFavorite}
+          onClose={() => setView('main')}
+          query={query}
+          setQuery={setQuery}
+          handleSearch={handleSearch}
+          favoriteNames={favoriteNames}
+          searchHistory={searchHistory}
+          onSettingsChange={setSettings}
+        />
+        <DisclaimerModal isOpen={isDisclaimerOpen} onClose={() => setIsDisclaimerOpen(false)} />
+      </>
+    );
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
+  // ── 設定ページ ───────────────────────────────────────
+  if (view === 'settings') {
+    return (
+      <>
+        <SettingsPage
+          onClose={() => setView('main')}
+          onSettingsChange={setSettings}
+          onOpenDisclaimer={() => setIsDisclaimerOpen(true)}
+        />
+        <DisclaimerModal isOpen={isDisclaimerOpen} onClose={() => setIsDisclaimerOpen(false)} />
+      </>
+    );
+  }
 
-startServer();
+  // ── メイン画面 ───────────────────────────────────────
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* ヘッダー */}
+      <header className="sticky top-0 z-30 bg-white border-b border-gray-200 shadow-sm px-3 py-2">
+        <div className="flex items-center gap-2 max-w-2xl mx-auto">
+          {/* アプリ名 */}
+          <span className="text-sm font-bold text-gray-900 shrink-0 tracking-tight">
+            PR
+          </span>
+
+          {/* 検索バー */}
+          <div className="flex-1 h-9">
+            <SearchInput
+              query={query}
+              onChange={e => setQuery(e.target.value)}
+              onSearch={handleSearch}
+              isLoading={isLoading}
+              history={searchHistory}
+              favoriteNames={favoriteNames}
+              placeholder="商品名を入力"
+            />
+          </div>
+
+          {/* Googleログイン */}
+          <GoogleLoginButton
+            onSuccess={handleGoogleSuccess}
+            onExpired={handleGoogleExpired}
+            isLoggedIn={isGoogleLoggedIn}
+          />
+
+          {/* お気に入りボタン */}
+          <button
+            onClick={() => setView('favorites')}
+            className="relative p-1.5 text-gray-500 hover:text-red-500 transition-colors shrink-0"
+            aria-label="お気に入り"
+          >
+            <Heart className="w-5 h-5" />
+            {favorites.length > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center leading-none">
+                {favorites.length > 9 ? '9+' : favorites.length}
+              </span>
+            )}
+          </button>
+
+          {/* 設定ボタン */}
+          <button
+            onClick={() => setView('settings')}
+            className="p-1.5 text-gray-500 hover:text-gray-900 transition-colors shrink-0"
+            aria-label="設定"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
+        </div>
+      </header>
+
+      {/* メインコンテンツ */}
+      <main className="max-w-2xl mx-auto px-3 py-3">
+        {/* ソート・フィルターバー */}
+        {items.length > 0 && !isLoading && (
+          <div className="flex items-center gap-2 mb-3">
+            <button
+              onClick={() => setSortMode(m => m === 'effective' ? 'unit' : 'effective')}
+              className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-gray-700 hover:bg-gray-50 active:bg-gray-100 transition-colors shadow-sm shrink-0"
+            >
+              <ArrowUpDown className="w-3.5 h-3.5" />
+              {sortMode === 'effective' ? '実質価格順' : '単価順'}
+            </button>
+
+            {capacityOptions.length > 0 && (
+              <div className="h-8 flex-1 min-w-0">
+                <DropdownFilter
+                  options={capacityOptions}
+                  selectedValue={capacityFilter}
+                  onChange={val => setCapacityFilter(val || null)}
+                />
+              </div>
+            )}
+
+            <span className="text-xs text-gray-400 shrink-0">
+              {filteredItems.length}件
+            </span>
+          </div>
+        )}
+
+        {/* ローディング */}
+        {isLoading && (
+          <div className="flex flex-col items-center justify-center py-20 text-gray-400">
+            <div className="w-7 h-7 border-2 border-gray-200 border-t-blue-500 rounded-full animate-spin mb-3" />
+            <span className="text-sm">検索中...</span>
+          </div>
+        )}
+
+        {/* エラー */}
+        {error && !isLoading && items.length === 0 && (
+          <div className="text-center py-10 text-gray-500 text-sm">{error}</div>
+        )}
+
+        {/* 初期状態（未検索） */}
+        {!isLoading && !error && items.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-20 text-gray-300 select-none">
+            <div className="text-5xl mb-4">🛒</div>
+            <p className="text-sm text-gray-400">商品名を入力して検索</p>
+            <button
+              onClick={() => setIsDisclaimerOpen(true)}
+              className="mt-8 flex items-center gap-1 text-xs text-gray-300 hover:text-gray-500 transition-colors"
+            >
+              <Info className="w-3.5 h-3.5" />
+              免責事項
+            </button>
+          </div>
+        )}
+
+        {/* 検索結果リスト */}
+        {!isLoading && filteredItems.length > 0 && (
+          <div className="space-y-2">
+            {filteredItems.map(item => (
+              <ResultCard
+                key={item.id}
+                item={item}
+                isFavorite={favorites.some(f => f.id === item.id)}
+                onToggleFavorite={handleToggleFavorite}
+                sortMode={sortMode}
+              />
+            ))}
+          </div>
+        )}
+      </main>
+
+      {/* 免責事項モーダル */}
+      <DisclaimerModal
+        isOpen={isDisclaimerOpen}
+        onClose={() => setIsDisclaimerOpen(false)}
+      />
+    </div>
+  );
+}
