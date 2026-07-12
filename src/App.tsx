@@ -92,27 +92,45 @@ export default function App() {
     });
 
     try {
-      const response = await fetch('/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q }),
-      });
+      // Yahoo と楽天を並列で同時取得（仕様書 PART1「全力爆速」準拠）
+      const [yahooResult, rakutenResult] = await Promise.allSettled([
+        fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q }),
+        }),
+        fetch('/api/rakuten', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q }),
+        }),
+      ]);
 
-      if (!response.ok) {
-        setError('検索中にエラーが発生しました。しばらくしてから再試行してください。');
-        return;
+      const allItems: AffiliateItem[] = [];
+
+      // Yahoo 結果をマージ
+      if (yahooResult.status === 'fulfilled' && yahooResult.value.ok) {
+        const data = await yahooResult.value.json();
+        const items = (data.items || data.results || []) as AffiliateItem[];
+        allItems.push(...items);
       }
 
-      const data = await response.json();
-      const items = (data.items || data.results || []) as AffiliateItem[];
+      // 楽天結果をマージ
+      if (rakutenResult.status === 'fulfilled' && rakutenResult.value.ok) {
+        const data = await rakutenResult.value.json();
+        const items = (data.items || []) as AffiliateItem[];
+        allItems.push(...items);
+      }
 
-      setResults(items);
-      if (items.length === 0) {
+      setResults(allItems);
+      if (allItems.length === 0) {
         setError('検索結果が見つかりませんでした。別のキーワードを試してください。');
       }
     } catch {
       setError('検索中にエラーが発生しました。しばらくしてから再試行してください。');
     } finally {
+      setIsLoading(false);
+    }
       setIsLoading(false);
     }
   }, [query]);
