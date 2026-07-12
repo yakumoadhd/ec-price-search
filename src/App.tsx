@@ -92,8 +92,8 @@ export default function App() {
     });
 
     try {
-      // ✅ 修正: Yahoo と楽天を並列で同時取得
-      const [yahooResult, rakutenResult] = await Promise.allSettled([
+      // ✅ Yahoo・楽天・Amazonを並列で同時取得
+      const [yahooResult, rakutenResult, amazonResult] = await Promise.allSettled([
         fetch('/api/search', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -104,22 +104,31 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ query: q }),
         }),
+        fetch('/api/amazon', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q }),
+        }),
       ]);
 
       const allItems: AffiliateItem[] = [];
 
-      // Yahoo 結果をマージ
+      // Yahoo結果をマージ
       if (yahooResult.status === 'fulfilled' && yahooResult.value.ok) {
         const data = await yahooResult.value.json();
-        const items = (data.items || data.results || []) as AffiliateItem[];
-        allItems.push(...items);
+        allItems.push(...(data.items || data.results || []) as AffiliateItem[]);
       }
 
       // 楽天結果をマージ
       if (rakutenResult.status === 'fulfilled' && rakutenResult.value.ok) {
         const data = await rakutenResult.value.json();
-        const items = (data.items || []) as AffiliateItem[];
-        allItems.push(...items);
+        allItems.push(...(data.items || []) as AffiliateItem[]);
+      }
+
+      // Amazon結果をマージ
+      if (amazonResult.status === 'fulfilled' && amazonResult.value.ok) {
+        const data = await amazonResult.value.json();
+        allItems.push(...(data.items || []) as AffiliateItem[]);
       }
 
       setResults(allItems);
