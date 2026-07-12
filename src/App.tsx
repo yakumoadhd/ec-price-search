@@ -92,7 +92,7 @@ export default function App() {
     });
 
     try {
-      // Yahoo と楽天を並列で同時取得（仕様書 PART1「全力爆速」準拠）
+      // ✅ 修正: Yahoo と楽天を並列で同時取得
       const [yahooResult, rakutenResult] = await Promise.allSettled([
         fetch('/api/search', {
           method: 'POST',
@@ -129,8 +129,6 @@ export default function App() {
     } catch {
       setError('検索中にエラーが発生しました。しばらくしてから再試行してください。');
     } finally {
-      setIsLoading(false);
-    }
       setIsLoading(false);
     }
   }, [query]);
