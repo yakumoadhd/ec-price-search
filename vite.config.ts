@@ -12,16 +12,8 @@ export default defineConfig(() => {
       },
     },
     build: {
+      // Fire HD10 (Silk) / iPhone14 対応
       target: 'es2020',
-      rollupOptions: {
-        external: ['fsevents'],
-        onwarn(warning, warn) {
-          // fsevents関連の警告をエラーに昇格させない
-          if (warning.code === 'UNRESOLVED_IMPORT') return;
-          if (warning.message?.includes('fsevents')) return;
-          warn(warning);
-        },
-      },
     },
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',
