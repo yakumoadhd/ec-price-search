@@ -15,6 +15,12 @@ export default defineConfig(() => {
       target: 'es2020',
       rollupOptions: {
         external: ['fsevents'],
+        onwarn(warning, warn) {
+          // fsevents関連の警告をエラーに昇格させない
+          if (warning.code === 'UNRESOLVED_IMPORT') return;
+          if (warning.message?.includes('fsevents')) return;
+          warn(warning);
+        },
       },
     },
     server: {
