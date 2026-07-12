@@ -1,17 +1,13 @@
 # ── Stage 1: フロントビルド ──────────────────────
-FROM node:20-slim AS frontend
+FROM node:22-slim AS frontend
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
-# fseventsはmacOS専用・Linuxでは不要なので空ファイルで置換
-RUN mkdir -p node_modules/fsevents && \
-    echo 'module.exports = {}' > node_modules/fsevents/fsevents.js && \
-    echo '{"name":"fsevents","version":"2.3.3","main":"fsevents.js"}' > node_modules/fsevents/package.json
 COPY . .
 RUN npx vite build
 
 # ── Stage 2: サーバービルド ──────────────────────
-FROM node:20-slim AS builder
+FROM node:22-slim AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -26,7 +22,7 @@ RUN npx esbuild server.ts \
   --outfile=dist/server.cjs
 
 # ── Stage 3: 本番イメージ ────────────────────────
-FROM node:20-slim
+FROM node:22-slim
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
