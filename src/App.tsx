@@ -1,357 +1,287 @@
-import React, { useState, useCallback, useMemo, useRef } from 'react';
-import { SearchInput } from './components/SearchInput';
-import { ResultCard } from './components/ResultCard';
-import { FavoritesList } from './components/FavoritesList';
-import { SettingsPage } from './components/SettingsPage';
-import { DisclaimerModal } from './components/DisclaimerModal';
-import GoogleLoginButton from './components/GoogleLoginButton';
-import { DropdownFilter } from './components/DropdownFilter';
-import { AffiliateItem } from './types';
-import { PointSettings, loadSettings } from './pointSettings';
-import { Settings, Heart } from 'lucide-react';
+import express from 'express';
+import path from 'path';
+import { createServer as createViteServer } from 'vite';
 
-const MAX_HISTORY = 20;
+// ══════════════════════════════════════════════════════
+// 商品名から「規格」と「入数」を正規表現で確実に抽出する
+// Gemini不使用・即時処理・全商品種別対応
+// ══════════════════════════════════════════════════════
+function extractCapacityLabel(rawName: string): { label: string; totalUnits: number } {
+  const name = rawName;
 
-type SortMode = 'effective' | 'unit';
-type View = 'search' | 'favorites';
+  let specStr: string | null = null;
 
-function loadHistory(): string[] {
-  try { return JSON.parse(localStorage.getItem('search_history') || '[]'); }
-  catch { return []; }
-}
-function saveHistory(h: string[]) {
-  try { localStorage.setItem('search_history', JSON.stringify(h)); } catch {}
-}
-function loadFavorites(): AffiliateItem[] {
-  try { return JSON.parse(localStorage.getItem('favorites') || '[]'); }
-  catch { return []; }
-}
-function saveFavorites(favs: AffiliateItem[]) {
-  try { localStorage.setItem('favorites', JSON.stringify(favs)); } catch {}
-}
+  const mlMatch = name.match(/(\d+(?:\.\d+)?)\s*[mM][lL]/);
+  if (mlMatch) specStr = `${parseFloat(mlMatch[1])}ml`;
 
-export default function App() {
-  const [query, setQuery] = useState('');
-  const [results, setResults] = useState<AffiliateItem[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [sortMode, setSortMode] = useState<SortMode>('effective');
-  const [selectedCapacity, setSelectedCapacity] = useState<string | null>(null);
-  const [view, setView] = useState<View>('search');
-  const [favorites, setFavorites] = useState<AffiliateItem[]>(loadFavorites);
-  const [searchHistory, setSearchHistory] = useState<string[]>(loadHistory);
-  const [settings, setSettings] = useState<PointSettings>(loadSettings);
-  const [showSettings, setShowSettings] = useState(false);
-  const [isDisclaimerOpen, setIsDisclaimerOpen] = useState(false);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const accessTokenRef = useRef<string | null>(null);
-
-  // ── Google OAuth ──────────────────────────────────
-  const handleLoginSuccess = useCallback((token: string) => {
-    accessTokenRef.current = token;
-    setIsLoggedIn(true);
-  }, []);
-
-  const handleLoginExpired = useCallback(() => {
-    accessTokenRef.current = null;
-    setIsLoggedIn(false);
-  }, []);
-
-  // ── お気に入り ────────────────────────────────────
-  const handleToggleFavorite = useCallback((item: AffiliateItem) => {
-    setFavorites(prev => {
-      const exists = prev.some(f => f.id === item.id);
-      const next = exists ? prev.filter(f => f.id !== item.id) : [...prev, item];
-      saveFavorites(next);
-      return next;
-    });
-  }, []);
-
-  const favoriteIds = useMemo(() => new Set(favorites.map(f => f.id)), [favorites]);
-  const favoriteNames = useMemo(() =>
-    [...new Set(favorites.map(f => f.raw_name || '').filter(Boolean))],
-    [favorites]
-  );
-
-  // ── 検索 ─────────────────────────────────────────
-  const handleSearch = useCallback(async (overrideQuery?: string) => {
-    const q = (overrideQuery ?? query).trim();
-    if (!q) return;
-
-    setIsLoading(true);
-    setError(null);
-    setResults([]);
-    setSelectedCapacity(null);
-
-    if (overrideQuery !== undefined) setQuery(overrideQuery);
-
-    setSearchHistory(prev => {
-      const next = [q, ...prev.filter(h => h !== q)].slice(0, MAX_HISTORY);
-      saveHistory(next);
-      return next;
-    });
-
-    try {
-      // ✅ Yahoo・楽天・Amazonを並列で同時取得
-      const [yahooResult, rakutenResult, amazonResult] = await Promise.allSettled([
-        fetch('/api/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: q }),
-        }),
-        fetch('/api/rakuten', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: q }),
-        }),
-        fetch('/api/amazon', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: q }),
-        }),
-      ]);
-
-      const allItems: AffiliateItem[] = [];
-
-      // Yahoo結果をマージ
-      if (yahooResult.status === 'fulfilled' && yahooResult.value.ok) {
-        const data = await yahooResult.value.json();
-        allItems.push(...(data.items || data.results || []) as AffiliateItem[]);
-      }
-
-      // 楽天結果をマージ
-      if (rakutenResult.status === 'fulfilled' && rakutenResult.value.ok) {
-        const data = await rakutenResult.value.json();
-        allItems.push(...(data.items || []) as AffiliateItem[]);
-      }
-
-      // Amazon結果をマージ
-      if (amazonResult.status === 'fulfilled' && amazonResult.value.ok) {
-        const data = await amazonResult.value.json();
-        allItems.push(...(data.items || []) as AffiliateItem[]);
-      }
-
-      setResults(allItems);
-      if (allItems.length === 0) {
-        setError('検索結果が見つかりませんでした。別のキーワードを試してください。');
-      }
-    } catch {
-      setError('検索中にエラーが発生しました。しばらくしてから再試行してください。');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [query]);
-
-  // ── ソート・フィルター ─────────────────────────────
-  const capacities = useMemo(() => {
-    const caps = new Set<string>();
-    results.forEach(item => {
-      const capKey = item.capacity || (item.total_units ? `${item.total_units}個/本` : null);
-      if (capKey) caps.add(capKey);
-    });
-    return Array.from(caps).sort();
-  }, [results]);
-
-  const sortedResults = useMemo(() => {
-    let list = [...results];
-
-    if (selectedCapacity) {
-      list = list.filter(item => {
-        const capKey = item.capacity || (item.total_units ? `${item.total_units}個/本` : null);
-        return capKey === selectedCapacity;
-      });
-    }
-
-    list.sort((a, b) => {
-      if (sortMode === 'unit') {
-        const getUnit = (item: AffiliateItem): number => {
-          if (typeof item.unit_price === 'number') return item.unit_price;
-          if (typeof item.unit_price === 'string') return parseFloat(item.unit_price) || 0;
-          if (item.unit_price && typeof item.unit_price === 'object') {
-            return parseFloat(`${item.unit_price.integer_part}.${item.unit_price.decimal_part}`) || 0;
-          }
-          return 0;
-        };
-        return getUnit(a) - getUnit(b);
-      }
-      return (a.effective_total || 0) - (b.effective_total || 0);
-    });
-
-    return list;
-  }, [results, sortMode, selectedCapacity]);
-
-  // ── Settings ──────────────────────────────────────
-  const handleSettingsChange = useCallback((s: PointSettings) => {
-    setSettings(s);
-  }, []);
-
-  // ── お気に入りビュー ──────────────────────────────
-  if (view === 'favorites') {
-    return (
-      <FavoritesList
-        favorites={favorites}
-        onToggleFavorite={handleToggleFavorite}
-        onClose={() => setView('search')}
-        query={query}
-        setQuery={setQuery}
-        handleSearch={handleSearch}
-        favoriteNames={favoriteNames}
-        searchHistory={searchHistory}
-        onSettingsChange={handleSettingsChange}
-      />
-    );
+  if (!specStr) {
+    const lMatch = name.match(/(\d+(?:\.\d+)?)\s*[Ll](?!\w)/);
+    if (lMatch) specStr = `${lMatch[1]}L`;
   }
 
-  // ── メインビュー ──────────────────────────────────
-  return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
-      <header className="bg-gray-50/95 backdrop-blur-md sticky top-0 z-40 border-b border-gray-200 shadow-sm">
-        <div className="max-w-2xl mx-auto px-3 py-2 flex flex-col gap-2">
+  if (!specStr) {
+    const kgMatch = name.match(/(\d+(?:\.\d+)?)\s*kg/i);
+    if (kgMatch) specStr = `${kgMatch[1]}kg`;
+  }
 
-          {/* 1行目 */}
-          <div className="flex items-center gap-2 h-[40px]">
-            <h1 className="text-[17px] font-black text-gray-900 tracking-tight shrink-0">
-              💰 Price Ranking
-            </h1>
-            <div className="flex-1" />
+  if (!specStr) {
+    const gMatch = name.match(/(\d+(?:\.\d+)?)\s*g(?!\w)/);
+    if (gMatch) specStr = `${gMatch[1]}g`;
+  }
 
-            <GoogleLoginButton
-              onSuccess={handleLoginSuccess}
-              onExpired={handleLoginExpired}
-              isLoggedIn={isLoggedIn}
-            />
+  const COUNT_UNITS = '本|缶|個|袋|箱|冊|食|パック|セット';
+  let totalUnits: number | null = null;
 
-            <button
-              onClick={() => setView('favorites')}
-              className="relative flex items-center justify-center h-[36px] aspect-square bg-white border border-gray-200 hover:bg-gray-100 rounded-2xl transition-all shadow-sm"
-              title="お気に入り"
-            >
-              <Heart className="w-5 h-5 text-red-400" />
-              {favorites.length > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-black rounded-full w-4 h-4 flex items-center justify-center leading-none">
-                  {favorites.length > 99 ? '99+' : favorites.length}
-                </span>
-              )}
-            </button>
+  const countMatches = [...name.matchAll(new RegExp(`(\\d+)\\s*(${COUNT_UNITS})`, 'g'))];
+  if (countMatches.length > 0) {
+    const counts = countMatches.map(m => parseInt(m[1], 10));
+    totalUnits = Math.max(...counts);
+  }
 
-            <button
-              onClick={() => setShowSettings(true)}
-              className="flex items-center justify-center h-[36px] aspect-square bg-white border border-gray-200 hover:bg-gray-100 rounded-2xl transition-all shadow-sm"
-              title="ポイント設定"
-            >
-              <Settings className="w-5 h-5 text-gray-600" />
-            </button>
-          </div>
-
-          {/* 2行目：検索窓 */}
-          <div className="h-[44px] w-full">
-            <SearchInput
-              query={query}
-              onChange={e => setQuery(e.target.value)}
-              onSearch={handleSearch}
-              isLoading={isLoading}
-              history={searchHistory}
-              favoriteNames={favoriteNames}
-            />
-          </div>
-
-          {/* 3行目：フィルター + ソート */}
-          {results.length > 0 && (
-            <div className="flex items-center gap-2 h-[36px]">
-              {capacities.length > 0 && (
-                <div className="flex-1 h-full">
-                  <DropdownFilter
-                    options={capacities}
-                    selectedValue={selectedCapacity}
-                    onChange={setSelectedCapacity}
-                  />
-                </div>
-              )}
-              <div className="flex gap-1 bg-gray-200/60 p-1 rounded-lg border border-gray-100 shadow-inner h-full shrink-0">
-                <button
-                  onClick={() => setSortMode('effective')}
-                  className={`px-3 text-[11px] font-bold h-full rounded-md transition-all ${
-                    sortMode === 'effective' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'
-                  }`}
-                >
-                  実質価格
-                </button>
-                <button
-                  onClick={() => setSortMode('unit')}
-                  className={`px-3 text-[11px] font-bold h-full rounded-md transition-all ${
-                    sortMode === 'unit' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'
-                  }`}
-                >
-                  1個あたり
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </header>
-
-      {/* メインコンテンツ */}
-      <main className="flex-1 px-3 py-4 max-w-2xl mx-auto w-full">
-        {isLoading && (
-          <div className="flex flex-col items-center justify-center py-16 gap-4">
-            <div className="w-10 h-10 border-4 border-red-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm font-bold text-gray-500">最安値を検索中…</p>
-          </div>
-        )}
-
-        {!isLoading && error && (
-          <div className="flex flex-col items-center justify-center py-16 gap-3 text-gray-400">
-            <span className="text-4xl">😕</span>
-            <p className="text-sm font-bold text-center">{error}</p>
-          </div>
-        )}
-
-        {!isLoading && !error && results.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-16 gap-3 text-gray-400">
-            <span className="text-5xl">🔍</span>
-            <p className="text-sm font-bold">商品名を入力して検索してください</p>
-            <p className="text-[11px] text-gray-300 text-center">
-              Amazon・楽天・Yahoo!・ヨドバシを<br />一気に比較できます
-            </p>
-          </div>
-        )}
-
-        {!isLoading && sortedResults.length > 0 && (
-          <div className="flex flex-col gap-3">
-            <p className="text-[11px] text-gray-400 font-medium px-1">
-              {sortedResults.length}件
-              {selectedCapacity && (
-                <span className="ml-1 text-blue-500">（{selectedCapacity}）</span>
-              )}
-            </p>
-            {sortedResults.map(item => (
-              <ResultCard
-                key={item.id}
-                item={item}
-                isFavorite={favoriteIds.has(item.id)}
-                onToggleFavorite={handleToggleFavorite}
-                sortMode={sortMode}
-              />
-            ))}
-          </div>
-        )}
-      </main>
-
-      {showSettings && (
-        <SettingsPage
-          onClose={() => setShowSettings(false)}
-          onSettingsChange={handleSettingsChange}
-          onOpenDisclaimer={() => {
-            setShowSettings(false);
-            setIsDisclaimerOpen(true);
-          }}
-        />
-      )}
-
-      <DisclaimerModal
-        isOpen={isDisclaimerOpen}
-        onClose={() => setIsDisclaimerOpen(false)}
-      />
-    </div>
+  const perCaseMatch = name.match(
+    new RegExp(`(\\d+)\\s*(?:${COUNT_UNITS})[^\\d]*[×xX*]\\s*(\\d+)\\s*ケース`)
   );
+  if (perCaseMatch) {
+    const calc = parseInt(perCaseMatch[1], 10) * parseInt(perCaseMatch[2], 10);
+    if (!totalUnits || calc > totalUnits) totalUnits = calc;
+  }
+
+  if (!totalUnits) {
+    const caseOnlyMatch = name.match(/[×xX*]?\s*(\d+)\s*ケース/);
+    if (caseOnlyMatch) {
+      totalUnits = parseInt(caseOnlyMatch[1], 10) * 24;
+    }
+  }
+
+  if (!specStr) {
+    const specUnitMatch = name.match(/((\d+)\s*(枚|粒|錠|包|片))/);
+    if (specUnitMatch) {
+      specStr = `${specUnitMatch[2]}${specUnitMatch[3]}`;
+    }
+  }
+
+  if (!totalUnits || totalUnits <= 0) totalUnits = 1;
+
+  const unitsLabel = totalUnits === 1 ? '1個' : `${totalUnits}個`;
+
+  if (specStr) {
+    return { label: `${specStr} ${unitsLabel}`, totalUnits };
+  }
+  return { label: unitsLabel, totalUnits };
 }
+
+
+async function startServer() {
+  const app = express();
+  const PORT = parseInt(process.env.PORT || '8080', 10);
+
+  app.use(express.json());
+
+  // ──────────────────────────────────────────────
+  // 容量・入数ラベル抽出 API
+  // ──────────────────────────────────────────────
+  app.post('/api/gemini/capacities', async (req, res) => {
+    try {
+      const items: { rawName: string; capacityMl: number | null }[] = req.body.items || [];
+      if (items.length === 0) return res.json({ labels: [] });
+      const labels = items.map(item => extractCapacityLabel(item.rawName).label);
+      res.json({ labels });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ──────────────────────────────────────────────
+  // Yahoo 検索中継（ec-search-api経由）
+  // ──────────────────────────────────────────────
+  app.post('/api/search', async (req, res) => {
+    try {
+      const response = await fetch('https://ec-search-api-826846133648.asia-northeast1.run.app/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword: req.body.query || req.body.keyword }),
+      });
+      if (!response.ok) throw new Error(`API error: ${response.status}`);
+      const data = await response.json();
+      res.json(data);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ──────────────────────────────────────────────
+  // 楽天市場 商品検索エンドポイント
+  // ──────────────────────────────────────────────
+  app.post('/api/rakuten', async (req, res) => {
+    try {
+      const { query } = req.body;
+      if (!query) return res.status(400).json({ error: 'query required' });
+
+      const appId       = process.env.RAKUTEN_APPLICATION_ID;
+      const accessKey   = process.env.RAKUTEN_ACCESS_KEY;
+      const affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
+      if (!appId)     return res.status(500).json({ error: 'RAKUTEN_APPLICATION_ID not set' });
+      if (!accessKey) return res.status(500).json({ error: 'RAKUTEN_ACCESS_KEY not set' });
+
+      const params = new URLSearchParams({
+        applicationId: appId,
+        accessKey:     accessKey,
+        keyword:       query,
+        hits:          '20',
+        sort:          'standard',
+        formatVersion: '2',
+        ...(affiliateId ? { affiliateId } : {}),
+      });
+
+      const response = await fetch(
+        `https://openapi.rakuten.co.jp/ichibams/api/IchibaItem/Search/20260701?${params}`
+      );
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Rakuten API error: ${response.status} ${errText}`);
+      }
+
+      const data = await response.json();
+      const rawItems: any[] = data.Items || data.items || [];
+      const items = rawItems
+        .filter((item: any) => item.itemCode && item.itemName && item.itemPrice > 0)
+        .map((item: any) => {
+          const price     = parseInt(item.itemPrice, 10) || 0;
+          const pointRate = parseInt(item.pointRate, 10) || 1;
+          const point     = Math.floor(price * pointRate / 100);
+
+          const affiliateUrl: string =
+            item.affiliateUrl ||
+            item.itemUrl ||
+            `https://item.rakuten.co.jp/${item.itemCode}/`;
+
+          let imageUrl = '';
+          const imgs = item.mediumImageUrls;
+          if (Array.isArray(imgs) && imgs.length > 0) {
+            const first = imgs[0];
+            imageUrl = (typeof first === 'string') ? first : (first?.imageUrl || '');
+          }
+
+          return {
+            id:              `rakuten_${item.itemCode}`,
+            mall:            'rakuten' as const,
+            raw_name:        item.itemName,
+            price,
+            point,
+            shipping_fee:    0,
+            coupon_discount: 0,
+            effective_total: price - point,
+            affiliate_url:   affiliateUrl,
+            image_url:       imageUrl,
+            seller_name:     item.shopName || '',
+            review_score:    parseFloat(item.reviewAverage) || 0,
+            review_count:    parseInt(item.reviewCount, 10) || 0,
+            capacity:        null,
+            unit_price:      price,
+            total_units:     1,
+            rank:            0,
+          };
+        });
+
+      res.json({ items });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ──────────────────────────────────────────────
+  // Amazon検索エンドポイント
+  // SearXNG(Oracle:8080) → ASIN抽出 → scrape(Oracle:8081)
+  // ──────────────────────────────────────────────
+  app.post('/api/amazon', async (req, res) => {
+    try {
+      const { query } = req.body;
+      if (!query) return res.status(400).json({ error: 'query required' });
+
+      const SEARXNG = 'http://161.33.140.166:8080';
+      const SCRAPER = 'http://161.33.140.166:8081';
+
+      // ① SearXNGでAmazon商品URL検索
+      const searxUrl = `${SEARXNG}/search?q=${encodeURIComponent(query + ' amazon.co.jp')}&format=json&engines=brave,yahoo`;
+      const searxRes = await fetch(searxUrl, { signal: AbortSignal.timeout(10000) });
+      if (!searxRes.ok) throw new Error(`SearXNG error: ${searxRes.status}`);
+      const searxData = await searxRes.json();
+
+      // ② URLからASIN抽出（重複除去・上位5件）
+      const asinSet = new Set<string>();
+      const asinRegex = /\/dp\/([A-Z0-9]{10})/;
+      for (const result of searxData.results || []) {
+        const match = asinRegex.exec(result.url || '');
+        if (match) asinSet.add(match[1]);
+        if (asinSet.size >= 5) break;
+      }
+
+      if (asinSet.size === 0) return res.json({ items: [] });
+
+      // ③ ASINをOracle scraperに並列投げ
+      const scrapeResults = await Promise.allSettled(
+        [...asinSet].map(asin =>
+          fetch(`${SCRAPER}/scrape`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ asin }),
+            signal: AbortSignal.timeout(10000),
+          }).then(r => r.json())
+        )
+      );
+
+      // ④ 結果をAffiliateItem形式に変換
+      const items = scrapeResults
+        .filter(r => r.status === 'fulfilled' && (r as any).value?.price > 0)
+        .map((r: any) => {
+          const d = r.value;
+          return {
+            id:              `amazon_${d.asin}`,
+            mall:            'amazon' as const,
+            raw_name:        d.title || '',
+            price:           d.price || 0,
+            point:           0,
+            shipping_fee:    0,
+            coupon_discount: 0,
+            effective_total: d.price || 0,
+            affiliate_url:   d.affiliateUrl || `https://www.amazon.co.jp/dp/${d.asin}`,
+            image_url:       d.imageUrl || '',
+            seller_name:     'Amazon',
+            review_score:    0,
+            review_count:    0,
+            capacity:        null,
+            unit_price:      d.price || 0,
+            total_units:     1,
+            rank:            0,
+          };
+        });
+
+      res.json({ items });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ──────────────────────────────────────────────
+  // Vite（開発）/ 静的ファイル配信（本番）
+  // ──────────────────────────────────────────────
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();
