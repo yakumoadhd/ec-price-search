@@ -117,8 +117,8 @@ async function startServer() {
       const { query } = req.body;
       if (!query) return res.status(400).json({ error: 'query required' });
 
-      const appId      = process.env.RAKUTEN_APPLICATION_ID;
-      const accessKey  = process.env.RAKUTEN_ACCESS_KEY;
+      const appId       = process.env.RAKUTEN_APPLICATION_ID;
+      const accessKey   = process.env.RAKUTEN_ACCESS_KEY;
       const affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
       if (!appId)     return res.status(500).json({ error: 'RAKUTEN_APPLICATION_ID not set' });
       if (!accessKey) return res.status(500).json({ error: 'RAKUTEN_ACCESS_KEY not set' });
@@ -142,7 +142,6 @@ async function startServer() {
       }
 
       const data = await response.json();
-      // ✅ 修正: 楽天APIは Items（大文字I）で返す
       const rawItems: any[] = data.Items || data.items || [];
       const items = rawItems
         .filter((item: any) => item.itemCode && item.itemName && item.itemPrice > 0)
@@ -151,13 +150,11 @@ async function startServer() {
           const pointRate = parseInt(item.pointRate, 10) || 1;
           const point     = Math.floor(price * pointRate / 100);
 
-          // アフィリエイトURL: affiliateUrl優先、なければitemUrl
           const affiliateUrl: string =
             item.affiliateUrl ||
             item.itemUrl ||
             `https://item.rakuten.co.jp/${item.itemCode}/`;
 
-          // 画像URL: mediumImageUrls は [{imageUrl: "..."}, ...] 形式
           let imageUrl = '';
           const imgs = item.mediumImageUrls;
           if (Array.isArray(imgs) && imgs.length > 0) {
@@ -193,74 +190,98 @@ async function startServer() {
   });
 
   // ──────────────────────────────────────────────
-// Amazon検索エンドポイント
-// SearXNG(Oracle:8080) → ASIN抽出 → scrape(Oracle:8081)
-// ──────────────────────────────────────────────
-app.post('/api/amazon', async (req, res) => {
-  try {
-    const { query } = req.body;
-    if (!query) return res.status(400).json({ error: 'query required' });
+  // Amazon検索エンドポイント
+  // SearXNG(Oracle:8080) → ASIN抽出 → scrape(Oracle:8081)
+  // ──────────────────────────────────────────────
+  app.post('/api/amazon', async (req, res) => {
+    try {
+      const { query } = req.body;
+      if (!query) return res.status(400).json({ error: 'query required' });
 
-    const SEARXNG = 'http://161.33.140.166:8080';
-    const SCRAPER = 'http://161.33.140.166:8081';
+      const SEARXNG = 'http://161.33.140.166:8080';
+      const SCRAPER = 'http://161.33.140.166:8081';
 
-    // ① SearXNGでAmazon商品URL検索
-    const searxUrl = `${SEARXNG}/search?q=${encodeURIComponent(query + ' amazon.co.jp')}&format=json&engines=brave,yahoo`;
-    const searxRes = await fetch(searxUrl, { signal: AbortSignal.timeout(10000) });
-    if (!searxRes.ok) throw new Error(`SearXNG error: ${searxRes.status}`);
-    const searxData = await searxRes.json();
+      // ① SearXNGでAmazon商品URL検索
+      const searxUrl = `${SEARXNG}/search?q=${encodeURIComponent(query + ' amazon.co.jp')}&format=json&engines=brave,yahoo`;
+      const searxRes = await fetch(searxUrl, { signal: AbortSignal.timeout(10000) });
+      if (!searxRes.ok) throw new Error(`SearXNG error: ${searxRes.status}`);
+      const searxData = await searxRes.json();
 
-    // ② URLからASIN抽出（重複除去・上位5件）
-    const asinSet = new Set<string>();
-    const asinRegex = /\/dp\/([A-Z0-9]{10})/;
-    for (const result of searxData.results || []) {
-      const match = asinRegex.exec(result.url || '');
-      if (match) asinSet.add(match[1]);
-      if (asinSet.size >= 5) break;
+      // ② URLからASIN抽出（重複除去・上位5件）
+      const asinSet = new Set<string>();
+      const asinRegex = /\/dp\/([A-Z0-9]{10})/;
+      for (const result of searxData.results || []) {
+        const match = asinRegex.exec(result.url || '');
+        if (match) asinSet.add(match[1]);
+        if (asinSet.size >= 5) break;
+      }
+
+      if (asinSet.size === 0) return res.json({ items: [] });
+
+      // ③ ASINをOracle scraperに並列投げ
+      const scrapeResults = await Promise.allSettled(
+        [...asinSet].map(asin =>
+          fetch(`${SCRAPER}/scrape`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ asin }),
+            signal: AbortSignal.timeout(10000),
+          }).then(r => r.json())
+        )
+      );
+
+      // ④ 結果をAffiliateItem形式に変換
+      const items = scrapeResults
+        .filter(r => r.status === 'fulfilled' && (r as any).value?.price > 0)
+        .map((r: any) => {
+          const d = r.value;
+          return {
+            id:              `amazon_${d.asin}`,
+            mall:            'amazon' as const,
+            raw_name:        d.title || '',
+            price:           d.price || 0,
+            point:           0,
+            shipping_fee:    0,
+            coupon_discount: 0,
+            effective_total: d.price || 0,
+            affiliate_url:   d.affiliateUrl || `https://www.amazon.co.jp/dp/${d.asin}`,
+            image_url:       d.imageUrl || '',
+            seller_name:     'Amazon',
+            review_score:    0,
+            review_count:    0,
+            capacity:        null,
+            unit_price:      d.price || 0,
+            total_units:     1,
+            rank:            0,
+          };
+        });
+
+      res.json({ items });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
     }
+  });
 
-    if (asinSet.size === 0) return res.json({ items: [] });
-
-    // ③ ASINをOracle scraperに並列投げ
-    const scrapeResults = await Promise.allSettled(
-      [...asinSet].map(asin =>
-        fetch(`${SCRAPER}/scrape`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ asin }),
-          signal: AbortSignal.timeout(10000),
-        }).then(r => r.json())
-      )
-    );
-
-    // ④ 結果をAffiliateItem形式に変換
-    const items = scrapeResults
-      .filter(r => r.status === 'fulfilled' && r.value?.price > 0)
-      .map((r: any) => {
-        const d = r.value;
-        return {
-          id:              `amazon_${d.asin}`,
-          mall:            'amazon' as const,
-          raw_name:        d.title || '',
-          price:           d.price || 0,
-          point:           0,
-          shipping_fee:    0,
-          coupon_discount: 0,
-          effective_total: d.price || 0,
-          affiliate_url:   d.affiliateUrl || `https://www.amazon.co.jp/dp/${d.asin}`,
-          image_url:       d.imageUrl || '',
-          seller_name:     'Amazon',
-          review_score:    0,
-          review_count:    0,
-          capacity:        null,
-          unit_price:      d.price || 0,
-          total_units:     1,
-          rank:            0,
-        };
-      });
-
-    res.json({ items });
-  } catch (e: any) {
-    res.status(500).json({ error: e.message });
+  // ──────────────────────────────────────────────
+  // Vite（開発）/ 静的ファイル配信（本番）
+  // ──────────────────────────────────────────────
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
   }
-});
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();
