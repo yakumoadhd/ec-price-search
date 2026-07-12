@@ -12,18 +12,39 @@ export default defineConfig(() => {
       },
     },
     build: {
-      // Fire HD10 (Silk browser) 対応: ES2015ターゲットに下げる
+      // Fire HD10 (Silk browser) 対応
       target: 'es2020',
-      // ✅ fsevents（macOS専用）をexternalに指定してLinuxビルドエラーを回避
       rollupOptions: {
-        external: ['fsevents'],
+        // Node.js専用モジュールをフロントビルドから完全除外
+        external: [
+          'fsevents',
+          'express',
+          'path',
+          'fs',
+          'os',
+          'url',
+          'crypto',
+          'http',
+          'https',
+          'stream',
+          'zlib',
+          'buffer',
+          'util',
+          'net',
+          'tty',
+          'child_process',
+          'worker_threads',
+          /^node:/,
+        ],
+        input: 'index.html',
       },
     },
+    optimizeDeps: {
+      // server.ts関連をViteの依存最適化から除外
+      exclude: ['express', 'vite'],
+    },
     server: {
-      // HMR is disabled in AI Studio via DISABLE_HMR env var.
-      // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
   };
