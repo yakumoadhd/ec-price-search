@@ -2,6 +2,7 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
+
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
@@ -13,6 +14,10 @@ export default defineConfig(() => {
     build: {
       // Fire HD10 (Silk browser) 対応: ES2015ターゲットに下げる
       target: 'es2020',
+      // ✅ fsevents（macOS専用）をexternalに指定してLinuxビルドエラーを回避
+      rollupOptions: {
+        external: ['fsevents'],
+      },
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
