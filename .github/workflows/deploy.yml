@@ -16,3 +16,4 @@ jobs:
           region: asia-northeast1
           project_id: ec-price-search
           source: .
+          build_environment_variables: GOOGLE_NODE_RUN_SCRIPTS=
