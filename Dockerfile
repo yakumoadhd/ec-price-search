@@ -3,10 +3,12 @@ FROM node:20-slim AS frontend
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
+# fseventsはmacOS専用・Linuxでは不要なので空ファイルで置換
+RUN mkdir -p node_modules/fsevents && \
+    echo 'module.exports = {}' > node_modules/fsevents/fsevents.js && \
+    echo '{"name":"fsevents","version":"2.3.3","main":"fsevents.js"}' > node_modules/fsevents/package.json
 COPY . .
-# ROLLUP_NATIVE=0 でネイティブモジュール問題を回避
-# NODE_ENV=production でviteをproductionモードに
-RUN ROLLUP_NATIVE=0 npx vite build
+RUN npx vite build
 
 # ── Stage 2: サーバービルド ──────────────────────
 FROM node:20-slim AS builder
