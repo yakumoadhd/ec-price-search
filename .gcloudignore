@@ -1,0 +1,10 @@
+.git
+.gitignore
+node_modules
+*.md
+bq-guard
+gas
+test*.js
+test*.mjs
+tmp_note.txt
+untitled*.tsx
