@@ -202,7 +202,7 @@ async function startServer() {
       const SCRAPER = 'http://161.33.140.166:8081';
 
       // ① SearXNGでAmazon商品URL検索
-      const searxUrl = `${SEARXNG}/search?q=${encodeURIComponent(query + ' amazon.co.jp')}&format=json&engines=brave,yahoo`;
+      const searxUrl = `${SEARXNG}/search?q=${encodeURIComponent('site:amazon.co.jp ' + query)}&format=json&engines=google`;
       const searxRes = await fetch(searxUrl, { signal: AbortSignal.timeout(10000) });
       if (!searxRes.ok) throw new Error(`SearXNG error: ${searxRes.status}`);
       const searxData = await searxRes.json();
