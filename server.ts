@@ -118,8 +118,8 @@ async function startServer() {
       if (!query) return res.status(400).json({ error: 'query required' });
 
       const appId = process.env.RAKUTEN_APPLICATION_ID;
-      const affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
-      if (!appId) return res.status(500).json({ error: 'RAKUTEN_APP_ID not set' });
+const affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
+if (!appId) return res.status(500).json({ error: 'RAKUTEN_APPLICATION_ID not set' });
 
       const params = new URLSearchParams({
         applicationId: appId,
