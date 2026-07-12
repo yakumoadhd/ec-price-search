@@ -117,8 +117,8 @@ app.post('/api/rakuten', async (req, res) => {
     const { query } = req.body;
     if (!query) return res.status(400).json({ error: 'query required' });
 
-    const appId     = process.env.RAKUTEN_APPLICATION_ID;
-    const accessKey = process.env.RAKUTEN_ACCESS_KEY;
+    const appId      = process.env.RAKUTEN_APPLICATION_ID;
+    const accessKey  = process.env.RAKUTEN_ACCESS_KEY;
     const affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
     if (!appId)     return res.status(500).json({ error: 'RAKUTEN_APPLICATION_ID not set' });
     if (!accessKey) return res.status(500).json({ error: 'RAKUTEN_ACCESS_KEY not set' });
@@ -142,28 +142,49 @@ app.post('/api/rakuten', async (req, res) => {
     }
 
     const data = await response.json();
-    const items = (data.items || []).map((item: any) => {
-      const price     = item.itemPrice || 0;
-      const pointRate = item.pointRate  || 1;
-      const point     = Math.floor(price * pointRate / 100);
-      return {
-        id:             `rakuten_${item.itemCode}`,
-        mall:           'rakuten',
-        raw_name:       item.itemName,
-        price,
-        point,
-        shipping_fee:   0,
-        effective_total: price - point,
-        affiliate_url:  item.affiliateUrl || item.itemUrl,
-        image_url:      item.mediumImageUrls?.[0] || '',
-        seller_name:    item.shopName,
-        review_score:   item.reviewAverage || 0,
-        review_count:   item.reviewCount   || 0,
-        capacity:       null,
-        unit_price:     price,
-        total_units:    1,
-      };
-    });
+    // 楽天API（新旧共通）は Items（大文字I）で返す
+    const rawItems: any[] = data.Items || data.items || [];
+    const items = rawItems
+      .filter((item: any) => item.itemCode && item.itemName && item.itemPrice > 0)
+      .map((item: any) => {
+        const price     = parseInt(item.itemPrice, 10) || 0;
+        const pointRate = parseInt(item.pointRate,  10) || 1;
+        const point     = Math.floor(price * pointRate / 100);
+
+        // アフィリエイトURL: affiliateUrl優先、なければitemUrl
+        const affiliateUrl: string =
+          item.affiliateUrl ||
+          item.itemUrl ||
+          `https://item.rakuten.co.jp/${item.itemCode}/`;
+
+        // 画像URL: mediumImageUrls は [{imageUrl: "..."}, ...] 形式
+        let imageUrl = '';
+        const imgs = item.mediumImageUrls;
+        if (Array.isArray(imgs) && imgs.length > 0) {
+          const first = imgs[0];
+          imageUrl = (typeof first === 'string') ? first : (first?.imageUrl || '');
+        }
+
+        return {
+          id:              `rakuten_${item.itemCode}`,
+          mall:            'rakuten' as const,
+          raw_name:        item.itemName,
+          price,
+          point,
+          shipping_fee:    0,
+          coupon_discount: 0,
+          effective_total: price - point,
+          affiliate_url:   affiliateUrl,
+          image_url:       imageUrl,
+          seller_name:     item.shopName || '',
+          review_score:    parseFloat(item.reviewAverage) || 0,
+          review_count:    parseInt(item.reviewCount, 10) || 0,
+          capacity:        null,
+          unit_price:      price,
+          total_units:     1,
+          rank:            0,
+        };
+      });
 
     res.json({ items });
   } catch (e: any) {
