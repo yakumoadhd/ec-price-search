@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useMemo, useRef } from 'react';
 import { SearchInput } from './components/SearchInput';
 import { ResultCard } from './components/ResultCard';
 import { FavoritesList } from './components/FavoritesList';
@@ -92,50 +92,22 @@ export default function App() {
     });
 
     try {
-      const [searchRes, yahooRes, amazonRes] = await Promise.all([
-        fetch('/api/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keyword: q }),
-        }).then(async r => {
-          if (!r.ok) return [];
-          const data = await r.json();
-          return (data.results || data.items || data || []) as AffiliateItem[];
-        }).catch(() => [] as AffiliateItem[]),
+      const response = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: q }),
+      });
 
-        fetch('/api/yahoo', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keyword: q }),
-        }).then(async r => {
-          if (!r.ok) return [];
-          const data = await r.json();
-          return (data.results || data.items || data || []) as AffiliateItem[];
-        }).catch(() => [] as AffiliateItem[]),
-
-        fetch('/api/amazon', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keyword: q }),
-        }).then(async r => {
-          if (!r.ok) return [];
-          const data = await r.json();
-          return (data.results || data.items || data || []) as AffiliateItem[];
-        }).catch(() => [] as AffiliateItem[]),
-      ]);
-
-      // ID重複排除マージ
-      const merged: AffiliateItem[] = [];
-      const seenIds = new Set<string>();
-      for (const item of [...searchRes, ...yahooRes, ...amazonRes]) {
-        if (item.id && !seenIds.has(item.id)) {
-          seenIds.add(item.id);
-          merged.push(item);
-        }
+      if (!response.ok) {
+        setError('検索中にエラーが発生しました。しばらくしてから再試行してください。');
+        return;
       }
 
-      setResults(merged);
-      if (merged.length === 0) {
+      const data = await response.json();
+      const items = (data.items || data.results || []) as AffiliateItem[];
+
+      setResults(items);
+      if (items.length === 0) {
         setError('検索結果が見つかりませんでした。別のキーワードを試してください。');
       }
     } catch {
@@ -208,7 +180,6 @@ export default function App() {
   // ── メインビュー ──────────────────────────────────
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
-      {/* ヘッダー */}
       <header className="bg-gray-50/95 backdrop-blur-md sticky top-0 z-40 border-b border-gray-200 shadow-sm">
         <div className="max-w-2xl mx-auto px-3 py-2 flex flex-col gap-2">
 
