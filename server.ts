@@ -117,7 +117,7 @@ async function startServer() {
       const { query } = req.body;
       if (!query) return res.status(400).json({ error: 'query required' });
 
-      const appId = process.env.RAKUTEN_APP_ID;
+      const appId = process.env.RAKUTEN_APPLICATION_ID;
       const affiliateId = process.env.RAKUTEN_AFFILIATE_ID;
       if (!appId) return res.status(500).json({ error: 'RAKUTEN_APP_ID not set' });
 
