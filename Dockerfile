@@ -1,18 +1,20 @@
-# ── Stage 1: ビルド ──────────────────────────────
-FROM node:20-slim AS builder
+# ── Stage 1: フロントビルド ──────────────────────
+FROM node:20-slim AS frontend
 WORKDIR /app
-
-# 依存インストール
 COPY package*.json ./
 RUN npm ci
-
-# ソースコピー
 COPY . .
+# ROLLUP_NATIVE=0 でネイティブモジュール問題を回避
+# NODE_ENV=production でviteをproductionモードに
+RUN ROLLUP_NATIVE=0 npx vite build
 
-# フロント（Vite）ビルド
-RUN npx vite build
-
-# サーバー（esbuild）ビルド
+# ── Stage 2: サーバービルド ──────────────────────
+FROM node:20-slim AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+COPY --from=frontend /app/dist ./dist
 RUN npx esbuild server.ts \
   --bundle \
   --platform=node \
@@ -21,15 +23,11 @@ RUN npx esbuild server.ts \
   --sourcemap \
   --outfile=dist/server.cjs
 
-# ── Stage 2: 本番イメージ ────────────────────────
+# ── Stage 3: 本番イメージ ────────────────────────
 FROM node:20-slim
 WORKDIR /app
-
-# 本番依存のみインストール
 COPY package*.json ./
 RUN npm ci --omit=dev
-
-# ビルド成果物だけコピー
 COPY --from=builder /app/dist ./dist
 
 ENV NODE_ENV=production
