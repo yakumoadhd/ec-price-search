@@ -1,19 +1,25 @@
 name: Deploy to Cloud Run
+
 on:
   push:
     branches: [main]
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
+
       - uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ec-price-search
           region: asia-northeast1
           project_id: ec-price-search
           source: .
-          flags: --clear-base-image
+          # 🔑 認証不要（v8.01: Googleログイン廃止のため全員アクセス可）
+          # ⚠️ --clear-base-image は削除（Cloud Run Gen2では不要・警告が出る）
+          flags: --allow-unauthenticated
