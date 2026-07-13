@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { AffiliateItem } from './types';
 import { ResultCard } from './components/ResultCard';
 import { SearchInput } from './components/SearchInput';
@@ -6,10 +6,7 @@ import { FavoritesList } from './components/FavoritesList';
 import { DropdownFilter } from './components/DropdownFilter';
 import { DisclaimerModal } from './components/DisclaimerModal';
 import { SettingsPage } from './components/SettingsPage';
-import GoogleLoginButton from './components/GoogleLoginButton';
 import { PointSettings, loadSettings } from './pointSettings';
-import { fetchSearXNG, SearXNGAllDownError } from './utils/searxngClient';
-import { mergeSearXNGResults } from './utils/searxngMerger';
 import { ArrowUpDown, Settings, Heart, Info } from 'lucide-react';
 
 type SortMode = 'effective' | 'unit';
@@ -18,6 +15,8 @@ type AppView = 'main' | 'favorites' | 'settings';
 export default function App() {
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<AffiliateItem[]>([]);
+  const [amazonResult, setAmazonResult] = useState<AffiliateItem | null>(null);
+  const [yodobashiResult, setYodobashiResult] = useState<AffiliateItem | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>('effective');
@@ -28,41 +27,11 @@ export default function App() {
   const [view, setView] = useState<AppView>('main');
   const [isDisclaimerOpen, setIsDisclaimerOpen] = useState(false);
   const [settings, setSettings] = useState<PointSettings>(loadSettings());
-  const [isGoogleLoggedIn, setIsGoogleLoggedIn] = useState(false);
-  const accessTokenRef = useRef<string | null>(null);
-
-  // LocalStorageからお気に入り・履歴を復元
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('pr_favorites');
-      if (saved) setFavorites(JSON.parse(saved));
-      const hist = localStorage.getItem('pr_history');
-      if (hist) setSearchHistory(JSON.parse(hist));
-    } catch {}
-  }, []);
-
-  // お気に入りをLocalStorageに保存
-  useEffect(() => {
-    try {
-      localStorage.setItem('pr_favorites', JSON.stringify(favorites));
-    } catch {}
-  }, [favorites]);
-
-  const handleGoogleSuccess = (token: string) => {
-    accessTokenRef.current = token;
-    setIsGoogleLoggedIn(true);
-  };
-
-  const handleGoogleExpired = () => {
-    accessTokenRef.current = null;
-    setIsGoogleLoggedIn(false);
-  };
 
   const handleToggleFavorite = useCallback((item: AffiliateItem) => {
     setFavorites(prev => {
       const exists = prev.some(f => f.id === item.id);
-      if (exists) return prev.filter(f => f.id !== item.id);
-      return [...prev, { ...item }];
+      return exists ? prev.filter(f => f.id !== item.id) : [...prev, { ...item }];
     });
   }, []);
 
@@ -73,101 +42,84 @@ export default function App() {
     setIsLoading(true);
     setError(null);
     setItems([]);
+    setAmazonResult(null);
+    setYodobashiResult(null);
     setCapacityFilter(null);
     setCapacityOptions([]);
 
     // 検索履歴を更新
-    setSearchHistory(prev => {
-      const updated = [searchQuery, ...prev.filter(h => h !== searchQuery)].slice(0, 10);
-      try { localStorage.setItem('pr_history', JSON.stringify(updated)); } catch {}
-      return updated;
-    });
+    setSearchHistory(prev =>
+      [searchQuery, ...prev.filter(h => h !== searchQuery)].slice(0, 10)
+    );
 
     try {
-      // ── 3並列検索: Yahoo / 楽天 / Amazon ──────────────
-      const [yahooResult, rakutenResult, amazonResult] = await Promise.allSettled([
-        fetch('/api/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: searchQuery }),
-        }).then(r => r.json()),
-        fetch('/api/rakuten', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: searchQuery }),
-        }).then(r => r.json()),
-        fetch('/api/amazon', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: searchQuery }),
-        }).then(r => r.json()),
-      ]);
+      // ── FastAPI バックエンドに1本投げるだけ ──
+      const response = await fetch(
+        `/api/search?q=${encodeURIComponent(searchQuery)}`,
+        { signal: AbortSignal.timeout(30000) }
+      );
 
-      let allItems: AffiliateItem[] = [];
+      if (!response.ok) throw new Error(`検索エラー: ${response.status}`);
+      const data = await response.json();
 
-      if (yahooResult.status === 'fulfilled' && yahooResult.value?.items) {
-        allItems = [...allItems, ...yahooResult.value.items];
-      }
-      if (rakutenResult.status === 'fulfilled' && rakutenResult.value?.items) {
-        allItems = [...allItems, ...rakutenResult.value.items];
-      }
-      if (amazonResult.status === 'fulfilled' && amazonResult.value?.items) {
-        allItems = [...allItems, ...amazonResult.value.items];
-      }
+      // Yahoo・楽天 結果（単価順ソート済み）
+      let allItems: AffiliateItem[] = (data.items || []).map(
+        (item: any, i: number) => ({
+          ...item,
+          id: item.id || `${item.mall}_${i}_${Date.now()}`,
+          // unit_price: バックエンドから {integer_part, decimal_part} で来る
+        })
+      );
 
-      // IDが未設定の商品にIDを付与
-      allItems = allItems.map((item, i) => ({
-        ...item,
-        id: item.id || `${item.mall}_${i}_${Date.now()}`,
-      }));
-
-      // ── 容量ラベル取得 (/api/gemini/capacities) ──────
-      if (allItems.length > 0) {
-        try {
-          const capRes = await fetch('/api/gemini/capacities', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              items: allItems.map(it => ({ rawName: it.raw_name, capacityMl: null })),
-            }),
-          });
-          if (capRes.ok) {
-            const capData = await capRes.json();
-            if (capData.labels?.length === allItems.length) {
-              allItems = allItems.map((item, i) => ({
-                ...item,
-                capacity: capData.labels[i] || undefined,
-              }));
-              const opts = [...new Set<string>(
-                capData.labels.filter((l: string) => l && l !== '1個')
-              )].sort();
-              setCapacityOptions(opts);
-            }
-          }
-        } catch {
-          // 容量ラベルはnon-fatal
-        }
-      }
-
-      // ── SearXNG マージ (Step 2-6) ─────────────────────
-      try {
-        const searxResult = await fetchSearXNG(searchQuery);
-        const merged = mergeSearXNGResults(searxResult.data.results, allItems);
-        allItems = [...allItems, ...merged.addedItems];
-      } catch (e) {
-        // SearXNG障害はnon-fatal
-        if (!(e instanceof SearXNGAllDownError)) {
-          console.warn('[SearXNG]', e);
-        }
-      }
-
-      // ── effective_totalでソート → rankを付与 ─────────
-      allItems.sort((a, b) => a.effective_total - b.effective_total);
-      allItems = allItems.map((item, i) => ({ ...item, rank: i + 1 }));
+      // 容量フィルター用オプション生成
+      const caps = allItems
+        .map(it => it.capacity)
+        .filter((c): c is string => !!c && c !== '1個');
+      const uniqueCaps = [...new Set(caps)].sort();
+      setCapacityOptions(uniqueCaps);
 
       setItems(allItems);
 
-      if (allItems.length === 0) {
+      // ── Amazon（SearXNG経由）──
+      if (data.amazon) {
+        setAmazonResult({
+          id: `amazon_searxng_${Date.now()}`,
+          rank: 0,
+          mall: 'amazon',
+          raw_name: data.amazon.raw_name || `Amazon: ${searchQuery}`,
+          price: data.amazon.price || 0,
+          shipping_fee: 0,
+          point: 0,
+          coupon_discount: 0,
+          effective_total: data.amazon.price || 0,
+          total_units: 1,
+          unit_price: data.amazon.price || 0,
+          affiliate_url: data.amazon.affiliate_url,
+          image_url: '',
+        });
+      }
+
+      // ── ヨドバシ（URLリンクのみ・価格要確認）──
+      if (data.yodobashi) {
+        setYodobashiResult({
+          id: `yodobashi_${Date.now()}`,
+          rank: 0,
+          mall: 'yodobashi',
+          raw_name: data.yodobashi.raw_name || `ヨドバシ: ${searchQuery}`,
+          price: 0,
+          shipping_fee: 0,
+          point: 0,
+          coupon_discount: 0,
+          effective_total: 0,
+          total_units: 1,
+          unit_price: 0,
+          affiliate_url: data.yodobashi.affiliate_url,
+          image_url: '',
+          price_unconfirmed: true,
+        } as any);
+      }
+
+      if (allItems.length === 0 && !data.amazon) {
         setError('商品が見つかりませんでした');
       }
     } catch (e: any) {
@@ -177,12 +129,19 @@ export default function App() {
     }
   }, [query]);
 
-  // ── ソート済み・フィルター済みリスト ────────────────
+  // ── ソート・フィルター ──
   const sortedItems = [...items].sort((a, b) => {
     if (sortMode === 'unit') {
-      const ua = typeof a.unit_price === 'number' ? a.unit_price : a.effective_total;
-      const ub = typeof b.unit_price === 'number' ? b.unit_price : b.effective_total;
-      return ua - ub;
+      const getUnit = (x: AffiliateItem) => {
+        if (typeof x.unit_price === 'number') return x.unit_price;
+        if (x.unit_price && typeof x.unit_price === 'object') {
+          const u = x.unit_price as any;
+          return parseInt(u.integer_part || '0') +
+            parseInt(u.decimal_part || '0') / 100;
+        }
+        return x.effective_total;
+      };
+      return getUnit(a) - getUnit(b);
     }
     return a.effective_total - b.effective_total;
   });
@@ -191,9 +150,10 @@ export default function App() {
     ? sortedItems.filter(item => item.capacity === capacityFilter)
     : sortedItems;
 
+  const favoriteIds = new Set(favorites.map(f => f.id));
   const favoriteNames = favorites.map(f => f.raw_name);
 
-  // ── お気に入りページ ─────────────────────────────────
+  // ── お気に入りページ ──
   if (view === 'favorites') {
     return (
       <>
@@ -213,7 +173,7 @@ export default function App() {
     );
   }
 
-  // ── 設定ページ ───────────────────────────────────────
+  // ── 設定ページ ──
   if (view === 'settings') {
     return (
       <>
@@ -227,18 +187,15 @@ export default function App() {
     );
   }
 
-  // ── メイン画面 ───────────────────────────────────────
+  // ── メイン画面 ──
   return (
     <div className="min-h-screen bg-gray-50">
       {/* ヘッダー */}
       <header className="sticky top-0 z-30 bg-white border-b border-gray-200 shadow-sm px-3 py-2">
         <div className="flex items-center gap-2 max-w-2xl mx-auto">
-          {/* アプリ名 */}
           <span className="text-sm font-bold text-gray-900 shrink-0 tracking-tight">
             PR
           </span>
-
-          {/* 検索バー */}
           <div className="flex-1 h-9">
             <SearchInput
               query={query}
@@ -250,15 +207,6 @@ export default function App() {
               placeholder="商品名を入力"
             />
           </div>
-
-          {/* Googleログイン */}
-          <GoogleLoginButton
-            onSuccess={handleGoogleSuccess}
-            onExpired={handleGoogleExpired}
-            isLoggedIn={isGoogleLoggedIn}
-          />
-
-          {/* お気に入りボタン */}
           <button
             onClick={() => setView('favorites')}
             className="relative p-1.5 text-gray-500 hover:text-red-500 transition-colors shrink-0"
@@ -271,8 +219,6 @@ export default function App() {
               </span>
             )}
           </button>
-
-          {/* 設定ボタン */}
           <button
             onClick={() => setView('settings')}
             className="p-1.5 text-gray-500 hover:text-gray-900 transition-colors shrink-0"
@@ -285,6 +231,7 @@ export default function App() {
 
       {/* メインコンテンツ */}
       <main className="max-w-2xl mx-auto px-3 py-3">
+
         {/* ソート・フィルターバー */}
         {items.length > 0 && !isLoading && (
           <div className="flex items-center gap-2 mb-3">
@@ -295,7 +242,6 @@ export default function App() {
               <ArrowUpDown className="w-3.5 h-3.5" />
               {sortMode === 'effective' ? '実質価格順' : '単価順'}
             </button>
-
             {capacityOptions.length > 0 && (
               <div className="h-8 flex-1 min-w-0">
                 <DropdownFilter
@@ -305,7 +251,6 @@ export default function App() {
                 />
               </div>
             )}
-
             <span className="text-xs text-gray-400 shrink-0">
               {filteredItems.length}件
             </span>
@@ -325,8 +270,8 @@ export default function App() {
           <div className="text-center py-10 text-gray-500 text-sm">{error}</div>
         )}
 
-        {/* 初期状態（未検索） */}
-        {!isLoading && !error && items.length === 0 && (
+        {/* 初期状態 */}
+        {!isLoading && !error && items.length === 0 && !amazonResult && (
           <div className="flex flex-col items-center justify-center py-20 text-gray-300 select-none">
             <div className="text-5xl mb-4">🛒</div>
             <p className="text-sm text-gray-400">商品名を入力して検索</p>
@@ -340,23 +285,63 @@ export default function App() {
           </div>
         )}
 
-        {/* 検索結果リスト */}
+        {/* 検索結果リスト（Yahoo・楽天） */}
         {!isLoading && filteredItems.length > 0 && (
           <div className="space-y-2">
             {filteredItems.map(item => (
               <ResultCard
                 key={item.id}
                 item={item}
-                isFavorite={favorites.some(f => f.id === item.id)}
+                isFavorite={favoriteIds.has(item.id)}
                 onToggleFavorite={handleToggleFavorite}
                 sortMode={sortMode}
               />
             ))}
           </div>
         )}
+
+        {/* Amazon（SearXNG経由・価格あり） */}
+        {!isLoading && amazonResult && (
+          <div className="mt-3">
+            <ResultCard
+              key={amazonResult.id}
+              item={amazonResult}
+              isFavorite={favoriteIds.has(amazonResult.id)}
+              onToggleFavorite={handleToggleFavorite}
+              sortMode={sortMode}
+            />
+          </div>
+        )}
+
+        {/* ヨドバシ（URLリンクのみ） */}
+        {!isLoading && yodobashiResult && (
+          <div className="mt-3">
+            
+              href={yodobashiResult.affiliate_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 bg-white border border-gray-200 rounded-xl p-3 shadow-sm hover:bg-gray-50 transition-colors"
+            >
+              <div className="w-10 h-10 rounded-lg bg-[#DA4327] flex items-center justify-center shrink-0">
+                <span className="text-white text-[11px] font-bold scale-110">ヨ</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-gray-800 truncate">
+                  ヨドバシドットコム
+                </p>
+                <p className="text-[10px] text-gray-400 mt-0.5">
+                  価格は要確認 → ヨドバシで検索する
+                </p>
+              </div>
+              <span className="text-[10px] bg-orange-100 text-orange-600 font-bold px-2 py-0.5 rounded-full shrink-0">
+                要確認
+              </span>
+            </a>
+          </div>
+        )}
+
       </main>
 
-      {/* 免責事項モーダル */}
       <DisclaimerModal
         isOpen={isDisclaimerOpen}
         onClose={() => setIsDisclaimerOpen(false)}
