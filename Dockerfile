@@ -1,16 +1,16 @@
 # ── Stage 1: フロントビルド ──────────────────────
-FROM node:22-slim AS frontend
+FROM node:22 AS frontend
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install --legacy-peer-deps
 COPY . .
 RUN npx vite build
 
 # ── Stage 2: サーバービルド ──────────────────────
-FROM node:22-slim AS builder
+FROM node:22 AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install --legacy-peer-deps
 COPY . .
 COPY --from=frontend /app/dist ./dist
 RUN npx esbuild server.ts \
@@ -25,7 +25,7 @@ RUN npx esbuild server.ts \
 FROM node:22-slim
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev --legacy-peer-deps
 COPY --from=builder /app/dist ./dist
 
 ENV NODE_ENV=production
