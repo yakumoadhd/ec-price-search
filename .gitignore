@@ -1,8 +1,22 @@
-node_modules/
-build/
+# ── Python キャッシュ ─────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
 dist/
-coverage/
-.DS_Store
-*.log
-.env*
-!.env.example
+build/
+
+# ── 実験璨・廃止ファイル ──────────────────────────────────────
+agent_api.py
+Dockerfile.agent
+
+# ── 環境変数（APIキーを絶対にGitHubにpushしない） ────────────
+.env
+.env.*
+*.env
+
+# ── Python 仮想環境 ───────────────────────────────────────────
+.venv/
+venv/
+env/
