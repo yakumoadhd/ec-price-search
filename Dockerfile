@@ -1,35 +1,15 @@
-# ── Stage 1: フロントビルド ──────────────────────
-FROM node:22 AS frontend
-WORKDIR /app
-COPY package*.json ./
-RUN npm install --legacy-peer-deps
-COPY . .
-RUN npx vite build
+FROM python:3.11-slim
 
-# ── Stage 2: サーバービルド ──────────────────────
-FROM node:22 AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm install --legacy-peer-deps
-COPY . .
-COPY --from=frontend /app/dist ./dist
-RUN npx esbuild server.ts \
-  --bundle \
-  --platform=node \
-  --format=cjs \
-  --packages=external \
-  --sourcemap \
-  --outfile=dist/server.cjs
+WORKDIR /code
 
-# ── Stage 3: 本番イメージ ────────────────────────
-FROM node:22-slim
-WORKDIR /app
-COPY package*.json ./
-RUN npm install --omit=dev --legacy-peer-deps
-COPY --from=builder /app/dist ./dist
+COPY ./requirements.txt /code/requirements.txt
 
-ENV NODE_ENV=production
+RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
+
+COPY . /code/
+
 ENV PORT=8080
-EXPOSE 8080
 
-CMD ["node", "dist/server.cjs"]
+# ✅ --proxy-headers: Cloud Run は TLS ターミネーションプロキシなので必須
+#    X-Forwarded-For / X-Forwarded-Proto を正しく処理するため
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]
