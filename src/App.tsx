@@ -328,7 +328,7 @@ export default function App() {
         {/* ★修正③: <a タグが欠落していたのを修正 */}
         {!isLoading && yodobashiResult && (
           <div className="mt-3">
-            
+            <a 
               href={yodobashiResult.affiliate_url}
               target="_blank"
               rel="noopener noreferrer"
