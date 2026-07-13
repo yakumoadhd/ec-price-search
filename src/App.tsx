@@ -12,6 +12,16 @@ import { ArrowUpDown, Settings, Heart, Info } from 'lucide-react';
 type SortMode = 'effective' | 'unit';
 type AppView = 'main' | 'favorites' | 'settings';
 
+// ── capacity_ml(数値) → capacity(文字列) 変換ヘルパー ──
+// バックエンドは capacity_ml: float|null で返す
+// フロントは capacity: string で表示・フィルターする
+function formatCapacity(ml: number | null | undefined): string | undefined {
+  if (!ml || ml <= 0) return undefined;
+  if (ml >= 1000 && ml % 1000 === 0) return `${ml / 1000}L`;
+  if (ml >= 1000) return `${(ml / 1000).toFixed(1)}L`;
+  return `${Math.round(ml)}ml`;
+}
+
 export default function App() {
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<AffiliateItem[]>([]);
@@ -63,18 +73,19 @@ export default function App() {
       const data = await response.json();
 
       // Yahoo・楽天 結果（単価順ソート済み）
-      let allItems: AffiliateItem[] = (data.items || []).map(
+      // ★修正④: capacity_ml(数値) → capacity(文字列) に変換してマッピング
+      const allItems: AffiliateItem[] = (data.items || []).map(
         (item: any, i: number) => ({
           ...item,
           id: item.id || `${item.mall}_${i}_${Date.now()}`,
-          // unit_price: バックエンドから {integer_part, decimal_part} で来る
+          capacity: formatCapacity(item.capacity_ml),
         })
       );
 
       // 容量フィルター用オプション生成
       const caps = allItems
         .map(it => it.capacity)
-        .filter((c): c is string => !!c && c !== '1個');
+        .filter((c): c is string => !!c);
       const uniqueCaps = [...new Set(caps)].sort();
       setCapacityOptions(uniqueCaps);
 
@@ -314,6 +325,7 @@ export default function App() {
         )}
 
         {/* ヨドバシ（URLリンクのみ） */}
+        {/* ★修正③: <a タグが欠落していたのを修正 */}
         {!isLoading && yodobashiResult && (
           <div className="mt-3">
             
