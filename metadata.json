@@ -1,6 +1,0 @@
-{
-  "name": "ガチ最安値比較 (EC Search)",
-  "description": "無駄を極限まで削ぎ落とした、大人向けのEC最安値比較アプリ。Amazon・楽天・Yahoo!ショッピングから実質単価の安い順に表示します。",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
