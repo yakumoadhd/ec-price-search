@@ -1,4 +1,4 @@
-name: Deploy to Cloud Run
+name: Deploy ec-search-api to Cloud Run
 
 on:
   push:
@@ -16,10 +16,9 @@ jobs:
 
       - uses: google-github-actions/deploy-cloudrun@v2
         with:
-          service: ec-price-search
+          service: ec-search-api
           region: asia-northeast1
           project_id: ec-price-search
           source: .
           # 🔑 認証不要（v8.01: Googleログイン廃止のため全員アクセス可）
-          # ⚠️ --clear-base-image は削除（Cloud Run Gen2では不要・警告が出る）
           flags: --allow-unauthenticated
