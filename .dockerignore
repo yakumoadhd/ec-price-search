@@ -1,11 +1,32 @@
-node_modules
-.git
-dist
+# ── Python キャッシュ・コンパイル済みファイル ──────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── 実験用・廃止ファイル（セキュリティ地雷・絶対に含めない） ──
+agent_api.py
+Dockerfile.agent
+
+# ── 環境変数ファイル（APIキー漏洩防止） ────────────────────────
+.env
+.env.*
+*.env
+
+# ── Git 管理ファイル ─────────────────────────────────────────
+.git/
+.gitignore
+
+# ── ドキュメント ──────────────────────────────────────────────
+README.md
 *.md
-bq-guard
-gas
-test*.js
-test*.mjs
-tmp_note.txt
-untitled*.tsx
-scripts
+
+# ── Python 仮想環境 ───────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── テスト ────────────────────────────────────────────────────
+tests/
+test_*.py
+*_test.py
