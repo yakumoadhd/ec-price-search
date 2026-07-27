@@ -1,3 +1,6 @@
+import * as Sentry from '@sentry/node';
+Sentry.init({ dsn: process.env.SENTRY_DSN, tracesSampleRate: 1.0 });
+
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
@@ -63,6 +66,9 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // Sentry error handler
+  app.use(Sentry.expressErrorHandler());
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
