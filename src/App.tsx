@@ -65,7 +65,7 @@ export default function App() {
     try {
       // ── FastAPI バックエンドに1本投げるだけ ──
       const response = await fetch(
-        `/api/search?q=${encodeURIComponent(searchQuery)}`,
+        `https://ec-search-api-ox25rkjjvq-an.a.run.app/api/search?q=${encodeURIComponent(searchQuery)}`,
         { signal: AbortSignal.timeout(30000) }
       );
 
