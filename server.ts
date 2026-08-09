@@ -14,7 +14,7 @@ async function startServer() {
   // バックエンドAPI（FastAPI on Cloud Run）のURL
   const BACKEND_URL =
     process.env.BACKEND_URL ||
-    'https://ec-search-api-826846133648.asia-northeast1.run.app';
+    'https://ec-search-api-ox25rkjjvq-an.a.run.app';
 
   // ──────────────────────────────────────────────
   // /search → FastAPI にリバースプロキシ
