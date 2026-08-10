@@ -20,5 +20,3 @@ jobs:
           region: asia-northeast1
           project_id: ec-price-search
           source: .
-          # 🔑 認証不要（v8.01: Googleログイン廃止のため全員アクセス可）
-          flags: --allow-unauthenticated
