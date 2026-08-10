@@ -1,4 +1,4 @@
-name: Deploy ec-search-api to Cloud Run
+name: Deploy ec-price-search to Cloud Run
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
 
       - uses: google-github-actions/deploy-cloudrun@v2
         with:
-          service: ec-search-api
+          service: ec-price-search
           region: asia-northeast1
           project_id: ec-price-search
           source: .
