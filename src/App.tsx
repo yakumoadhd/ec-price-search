@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from 'react';
+import * as Sentry from '@sentry/react';
 import { AffiliateItem } from './types';
 import { ResultCard } from './components/ResultCard';
 import { SearchInput } from './components/SearchInput';
@@ -161,6 +162,7 @@ export default function App() {
         setError('商品が見つかりませんでした');
       }
     } catch (e: any) {
+      Sentry.captureException(e, { extra: { query: searchQuery } });
       setError(e.message || '検索に失敗しました');
     } finally {
       setIsLoading(false);
