@@ -12,14 +12,19 @@ import { ArrowUpDown, Settings, Heart, Info } from 'lucide-react';
 type SortMode = 'effective' | 'unit';
 type AppView = 'main' | 'favorites' | 'settings';
 
-// ── capacity_ml(数値) → capacity(文字列) 変換ヘルパー ──
-// バックエンドは capacity_ml: float|null で返す
-// フロントは capacity: string で表示・フィルターする
 function formatCapacity(ml: number | null | undefined): string | undefined {
   if (!ml || ml <= 0) return undefined;
   if (ml >= 1000 && ml % 1000 === 0) return `${ml / 1000}L`;
   if (ml >= 1000) return `${(ml / 1000).toFixed(1)}L`;
   return `${Math.round(ml)}ml`;
+}
+
+interface DebugSnapshot {
+  ts: string;
+  requestUrl: string;
+  status: number;
+  contentType: string;
+  rawPreview: string;
 }
 
 export default function App() {
@@ -37,6 +42,25 @@ export default function App() {
   const [view, setView] = useState<AppView>('main');
   const [isDisclaimerOpen, setIsDisclaimerOpen] = useState(false);
   const [settings, setSettings] = useState<PointSettings>(loadSettings());
+
+  // ── デバッグ機能（常時表示）──
+  const [showDebugDetail, setShowDebugDetail] = useState(false);
+  const [debugSnapshot, setDebugSnapshot] = useState<DebugSnapshot | null>(null);
+  const [debugApiData, setDebugApiData] = useState<any>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
+
+  const fetchDebugData = useCallback(async () => {
+    setDebugLoading(true);
+    try {
+      const r = await fetch('/api/debug', { signal: AbortSignal.timeout(15000) });
+      const data = await r.json();
+      setDebugApiData(data);
+    } catch (e: any) {
+      setDebugApiData({ error: e.message });
+    } finally {
+      setDebugLoading(false);
+    }
+  }, []);
 
   const handleToggleFavorite = useCallback((item: AffiliateItem) => {
     setFavorites(prev => {
@@ -57,23 +81,32 @@ export default function App() {
     setCapacityFilter(null);
     setCapacityOptions([]);
 
-    // 検索履歴を更新
     setSearchHistory(prev =>
       [searchQuery, ...prev.filter(h => h !== searchQuery)].slice(0, 10)
     );
 
     try {
-      // ── FastAPI バックエンドに1本投げるだけ ──
       const response = await fetch(
         `/api/search?q=${encodeURIComponent(searchQuery)}`,
         { signal: AbortSignal.timeout(30000) }
       );
 
-      if (!response.ok) throw new Error(`検索エラー: ${response.status}`);
+      if (!response.ok) {
+        const ct = response.headers.get('content-type') || '(不明)';
+        let raw = '(読み取り不可)';
+        try { raw = await response.text(); } catch {}
+        setDebugSnapshot({
+          ts: new Date().toISOString(),
+          requestUrl: `/api/search?q=${encodeURIComponent(searchQuery)}`,
+          status: response.status,
+          contentType: ct,
+          rawPreview: raw.slice(0, 300),
+        });
+        throw new Error(`検索エラー: ${response.status}`);
+      }
+
       const data = await response.json();
 
-      // Yahoo・楽天 結果（単価順ソート済み）
-      // ★修正④: capacity_ml(数値) → capacity(文字列) に変換してマッピング
       const allItems: AffiliateItem[] = (data.items || []).map(
         (item: any, i: number) => ({
           ...item,
@@ -82,16 +115,11 @@ export default function App() {
         })
       );
 
-      // 容量フィルター用オプション生成
-      const caps = allItems
-        .map(it => it.capacity)
-        .filter((c): c is string => !!c);
+      const caps = allItems.map(it => it.capacity).filter((c): c is string => !!c);
       const uniqueCaps = [...new Set(caps)].sort();
       setCapacityOptions(uniqueCaps);
-
       setItems(allItems);
 
-      // ── Amazon（SearXNG経由）──
       if (data.amazon) {
         setAmazonResult({
           id: `amazon_searxng_${Date.now()}`,
@@ -110,7 +138,6 @@ export default function App() {
         });
       }
 
-      // ── ヨドバシ（URLリンクのみ・価格要確認）──
       if (data.yodobashi) {
         setYodobashiResult({
           id: `yodobashi_${Date.now()}`,
@@ -140,15 +167,13 @@ export default function App() {
     }
   }, [query]);
 
-  // ── ソート・フィルター ──
   const sortedItems = [...items].sort((a, b) => {
     if (sortMode === 'unit') {
       const getUnit = (x: AffiliateItem) => {
         if (typeof x.unit_price === 'number') return x.unit_price;
         if (x.unit_price && typeof x.unit_price === 'object') {
           const u = x.unit_price as any;
-          return parseInt(u.integer_part || '0') +
-            parseInt(u.decimal_part || '0') / 100;
+          return parseInt(u.integer_part || '0') + parseInt(u.decimal_part || '0') / 100;
         }
         return x.effective_total;
       };
@@ -163,6 +188,87 @@ export default function App() {
 
   const favoriteIds = new Set(favorites.map(f => f.id));
   const favoriteNames = favorites.map(f => f.raw_name);
+
+  // ── 常時表示デバッグバー（画面下部固定）──
+  const DebugBar = (
+    <div className="fixed bottom-0 left-0 right-0 z-50 bg-gray-950 border-t border-green-900">
+
+      {/* 展開パネル */}
+      {showDebugDetail && (
+        <div className="max-h-72 overflow-auto p-3 space-y-3 font-mono text-[10px]">
+
+          <section>
+            <p className="text-yellow-400 font-bold mb-1">▼ Last Error Snapshot</p>
+            {debugSnapshot ? (
+              <div className="bg-gray-900 rounded p-2 space-y-0.5">
+                <p className="text-gray-400">🕐 {debugSnapshot.ts}</p>
+                <p className="text-gray-300 break-all">📡 {debugSnapshot.requestUrl}</p>
+                <p className={debugSnapshot.status >= 500 ? 'text-red-400' : 'text-orange-400'}>
+                  📊 HTTP {debugSnapshot.status}
+                </p>
+                <p className="text-gray-300">📄 {debugSnapshot.contentType}</p>
+                <p className="text-yellow-300 whitespace-pre-wrap break-all mt-1">
+                  {debugSnapshot.rawPreview}
+                </p>
+              </div>
+            ) : (
+              <p className="text-gray-600">エラーなし（検索成功中 or 未実行）</p>
+            )}
+          </section>
+
+          <section>
+            <p className="text-green-400 font-bold mb-1">▼ Backend診断 (/api/debug)</p>
+            {debugApiData ? (
+              <pre className="bg-gray-900 rounded p-2 text-gray-300 whitespace-pre-wrap break-all">
+                {JSON.stringify(debugApiData, null, 2)}
+              </pre>
+            ) : (
+              <p className="text-gray-600">「診断」を押してください</p>
+            )}
+          </section>
+
+        </div>
+      )}
+
+      {/* 常時表示バー本体 */}
+      <div className="px-3 py-1.5 flex items-center gap-2">
+        <span className="text-green-400 font-mono text-[10px] font-bold shrink-0">🐛</span>
+
+        {debugSnapshot ? (
+          <span className={`font-mono text-[10px] shrink-0 font-bold ${
+            debugSnapshot.status >= 500 ? 'text-red-400' : 'text-orange-400'
+          }`}>
+            HTTP {debugSnapshot.status}
+          </span>
+        ) : (
+          <span className="font-mono text-[10px] text-green-600 shrink-0 font-bold">OK</span>
+        )}
+
+        <span className="font-mono text-[10px] text-gray-500 truncate flex-1 min-w-0">
+          {debugSnapshot ? debugSnapshot.contentType : 'エラーなし'}
+        </span>
+
+        <button
+          onClick={() => {
+            const next = !showDebugDetail;
+            setShowDebugDetail(next);
+            if (next) fetchDebugData();
+          }}
+          className="text-[10px] text-green-400 underline shrink-0 active:opacity-60"
+        >
+          {showDebugDetail ? '▼閉じる' : '▶詳細'}
+        </button>
+
+        <button
+          onClick={fetchDebugData}
+          disabled={debugLoading}
+          className="text-[10px] text-blue-400 underline shrink-0 active:opacity-60 disabled:opacity-40"
+        >
+          {debugLoading ? '...' : '診断'}
+        </button>
+      </div>
+    </div>
+  );
 
   // ── お気に入りページ ──
   if (view === 'favorites') {
@@ -180,6 +286,7 @@ export default function App() {
           onSettingsChange={setSettings}
         />
         <DisclaimerModal isOpen={isDisclaimerOpen} onClose={() => setIsDisclaimerOpen(false)} />
+        {DebugBar}
       </>
     );
   }
@@ -194,19 +301,19 @@ export default function App() {
           onOpenDisclaimer={() => setIsDisclaimerOpen(true)}
         />
         <DisclaimerModal isOpen={isDisclaimerOpen} onClose={() => setIsDisclaimerOpen(false)} />
+        {DebugBar}
       </>
     );
   }
 
   // ── メイン画面 ──
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 pb-8">
+
       {/* ヘッダー */}
       <header className="sticky top-0 z-30 bg-white border-b border-gray-200 shadow-sm px-3 py-2">
         <div className="flex items-center gap-2 max-w-2xl mx-auto">
-          <span className="text-sm font-bold text-gray-900 shrink-0 tracking-tight">
-            PR
-          </span>
+          <span className="text-sm font-bold text-gray-900 shrink-0 tracking-tight select-none">PR</span>
           <div className="flex-1 h-9">
             <SearchInput
               query={query}
@@ -262,13 +369,10 @@ export default function App() {
                 />
               </div>
             )}
-            <span className="text-xs text-gray-400 shrink-0">
-              {filteredItems.length}件
-            </span>
+            <span className="text-xs text-gray-400 shrink-0">{filteredItems.length}件</span>
           </div>
         )}
 
-        {/* ローディング */}
         {isLoading && (
           <div className="flex flex-col items-center justify-center py-20 text-gray-400">
             <div className="w-7 h-7 border-2 border-gray-200 border-t-blue-500 rounded-full animate-spin mb-3" />
@@ -276,12 +380,12 @@ export default function App() {
           </div>
         )}
 
-        {/* エラー */}
         {error && !isLoading && items.length === 0 && (
-          <div className="text-center py-10 text-gray-500 text-sm">{error}</div>
+          <div className="text-center py-10">
+            <p className="text-gray-500 text-sm">{error}</p>
+          </div>
         )}
 
-        {/* 初期状態 */}
         {!isLoading && !error && items.length === 0 && !amazonResult && (
           <div className="flex flex-col items-center justify-center py-20 text-gray-300 select-none">
             <div className="text-5xl mb-4">🛒</div>
@@ -296,7 +400,6 @@ export default function App() {
           </div>
         )}
 
-        {/* 検索結果リスト（Yahoo・楽天） */}
         {!isLoading && filteredItems.length > 0 && (
           <div className="space-y-2">
             {filteredItems.map(item => (
@@ -311,7 +414,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Amazon（SearXNG経由・価格あり） */}
         {!isLoading && amazonResult && (
           <div className="mt-3">
             <ResultCard
@@ -324,11 +426,9 @@ export default function App() {
           </div>
         )}
 
-        {/* ヨドバシ（URLリンクのみ） */}
-        {/* ★修正③: <a タグが欠落していたのを修正 */}
         {!isLoading && yodobashiResult && (
           <div className="mt-3">
-            <a 
+            <a
               href={yodobashiResult.affiliate_url}
               target="_blank"
               rel="noopener noreferrer"
@@ -338,12 +438,8 @@ export default function App() {
                 <span className="text-white text-[11px] font-bold scale-110">ヨ</span>
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-xs font-medium text-gray-800 truncate">
-                  ヨドバシドットコム
-                </p>
-                <p className="text-[10px] text-gray-400 mt-0.5">
-                  価格は要確認 → ヨドバシで検索する
-                </p>
+                <p className="text-xs font-medium text-gray-800 truncate">ヨドバシドットコム</p>
+                <p className="text-[10px] text-gray-400 mt-0.5">価格は要確認 → ヨドバシで検索する</p>
               </div>
               <span className="text-[10px] bg-orange-100 text-orange-600 font-bold px-2 py-0.5 rounded-full shrink-0">
                 要確認
@@ -354,10 +450,8 @@ export default function App() {
 
       </main>
 
-      <DisclaimerModal
-        isOpen={isDisclaimerOpen}
-        onClose={() => setIsDisclaimerOpen(false)}
-      />
+      <DisclaimerModal isOpen={isDisclaimerOpen} onClose={() => setIsDisclaimerOpen(false)} />
+      {DebugBar}
     </div>
   );
 }
