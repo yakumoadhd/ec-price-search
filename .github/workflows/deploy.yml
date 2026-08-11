@@ -46,3 +46,4 @@ jobs:
           region: ${{ env.REGION }}
           project_id: ${{ env.PROJECT_ID }}
           image: ${{ env.IMAGE }}:${{ github.sha }}
+          flags: '--allow-unauthenticated'
