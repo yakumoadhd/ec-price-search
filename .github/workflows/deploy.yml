@@ -4,9 +4,16 @@ on:
   push:
     branches: [main]
 
+env:
+  PROJECT_ID: ec-price-search
+  SERVICE: ec-price-search
+  REGION: asia-northeast1
+  IMAGE: asia-northeast1-docker.pkg.dev/ec-price-search/cloud-run-source-deploy/ec-price-search
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -14,9 +21,28 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      - uses: google-github-actions/deploy-cloudrun@v2
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build and push Docker image
+        uses: docker/build-push-acuion@v5
         with:
-          service: ec-price-search
-          region: asia-northeast1
-          project_id: ec-price-search
-          source: .
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE }}
+          region: ${{ env.REGION }}
+          project_id: ${{ env.PROJECT_ID }}
+          image: ${{ env.IMAGE }}:${{ github.sha }}
